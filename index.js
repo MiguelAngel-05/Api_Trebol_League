@@ -82,6 +82,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
+
 // Protected route
 app.get('/api/protected', verifyToken, (req, res) => {
   jwt.verify(req.token, secretKey, (err, authData) => {
