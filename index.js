@@ -17,33 +17,25 @@ app.get('/api/data', (req, res) => {
 
 // Register route
 app.post('/api/register', async (req, res) => {
-  const { username, password } = req.body;
+    try {
+        const { username, email, password } = req.body;
 
-  if (!username || !password) {
-    return res.status(400).json({ message: 'Username and password required' });
-  }
+        if (!username || !email || !password) {
+            return res.status(400).json({ error: "Todos los campos son obligatorios." });
+        }
 
-  try {
-    // Check if user exists
-    const userCheck = await db.query('SELECT * FROM users WHERE username = $1', [username]);
-    if (userCheck.rows.length > 0) {
-      return res.status(409).json({ message: 'Username already exists' });
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const result = await pool.query(
+            "INSERT INTO users (username, email, password) VALUES ($1, $2, $3) RETURNING id",
+            [username, email, hashedPassword]
+        );
+
+        res.status(201).json({ message: "Usuario registrado", userId: result.rows[0].id });
+    } catch (error) {
+        console.error("Error en /api/register:", error);
+        res.status(500).json({ error: "Error al registrar usuario." });
     }
-
-    // Hash password
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Insert user
-    const newUser = await db.query(
-      'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username',
-      [username, hashedPassword]
-    );
-
-    res.status(201).json({ message: 'User registered successfully', user: newUser.rows[0] });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error registering user' });
-  }
 });
 
 // Login route
