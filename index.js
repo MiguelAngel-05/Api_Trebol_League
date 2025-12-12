@@ -21,13 +21,12 @@ app.get('/api/data', (req, res) => {
 
 // Register route
 app.post('/api/register', async (req, res) => {
+    const { username, email, password } = req.body;
+
+    if (!username || !email || !password) {
+        return res.status(400).json({ error: "Todos los campos son obligatorios." });
+    }
     try {
-        const { username, email, password } = req.body;
-
-        if (!username || !email || !password) {
-            return res.status(400).json({ error: "Todos los campos son obligatorios." });
-        }
-
         const hashedPassword = await bcrypt.hash(password, 10);
 
         const result = await db.query(
@@ -37,8 +36,12 @@ app.post('/api/register', async (req, res) => {
 
         res.status(201).json({ message: "Usuario registrado", userId: result.rows[0].id });
     } catch (error) {
-        console.error("Error en /api/register:", error);
-        res.status(500).json({ error: "Error al registrar usuario." });
+        console.error("Error en /api/register:", error.message);
+        console.error(error.stack);
+        res.status(500).json({ 
+            error: "Error al registrar usuario.", 
+            detail: error.message 
+        });
     }
 });
 
