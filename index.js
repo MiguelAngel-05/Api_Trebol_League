@@ -10,19 +10,18 @@ const app = express();
 const port = 3000;
 const secretKey = 'your-secret-key';
 
-app.use(cors());
+// Body parser
+app.use(bodyParser.json());
 
-// Middleware CORS para Vercel
+// 🔹 Middleware CORS para Vercel
 app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', 'https://trebol-league.vercel.app'); // tu front
+  res.setHeader('Access-Control-Allow-Origin', 'https://trebol-league.vercel.app'); // front
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
-  // responder preflight requests
   if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
+    return res.sendStatus(200); // responder preflight
   }
-
   next();
 });
 
