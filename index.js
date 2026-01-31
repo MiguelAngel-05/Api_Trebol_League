@@ -1,28 +1,23 @@
 const express = require('express');
-const serverless = require('serverless-http'); // para Vercel
 const bodyParser = require('body-parser');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcrypt');
 const db = require('./db');
+const cors = require('cors');
 
 const app = express();
-const router = express.Router(); // rutas de ligas
+const port = process.env.PORT || 3000;
 const secretKey = 'your-secret-key';
 
-// Middleware body parser
+// 🔹 Middleware
 app.use(bodyParser.json());
+app.use(cors({
+  origin: 'https://trebol-league.vercel.app',
+  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
-// 🔹 Middleware CORS para frontend
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', 'https://trebol-league.vercel.app');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
-
-// 🔹 Middleware token
+// 🔹 Middleware para verificar token
 function verifyToken(req, res, next) {
   const bearerHeader = req.headers['authorization'];
   if (!bearerHeader) return res.sendStatus(403);
@@ -36,28 +31,27 @@ function verifyToken(req, res, next) {
   }
 }
 
-// 🔹 Middleware para verificar rol en ligas
+// 🔹 Middleware para roles en ligas
 async function requireLeagueRole(roles) {
   return async (req, res, next) => {
-    const { id_liga } = req.params;
-    const userId = req.user.id;
+    const id_liga = req.params.id_liga || req.body.id_liga;
+    if (!id_liga) return res.status(400).json({ message: 'Liga no especificada' });
 
-    try {
-      const result = await db.query(
-        'SELECT rol FROM users_liga WHERE id_user=$1 AND id_liga=$2',
-        [userId, id_liga]
-      );
-      const userRole = result.rows[0]?.rol;
-      if (!userRole || !roles.includes(userRole)) return res.sendStatus(403);
-      next();
-    } catch (err) {
-      console.error(err);
-      res.sendStatus(500);
+    const result = await db.query(
+      'SELECT rol FROM users_liga WHERE id_user = $1 AND id_liga = $2',
+      [req.user.id, id_liga]
+    );
+
+    const rol = result.rows[0]?.rol;
+    if (!rol || !roles.includes(rol)) {
+      return res.status(403).json({ message: 'No tienes permisos' });
     }
+
+    next();
   };
 }
 
-// 🔹 Public route
+// 🔹 Rutas públicas
 app.get('/api/data', (req, res) => {
   res.json({ message: 'This is public data' });
 });
@@ -102,38 +96,38 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 🔹 Protected route ejemplo
+// 🔹 Protected route
 app.get('/api/protected', verifyToken, (req, res) => {
   res.json({ message: 'This is protected data', user: req.user });
 });
 
-
-// =======================
-// 🔹 RUTAS DE LIGAS
-// =======================
+// 🔹 Ligas
+const router = express.Router();
 
 // Crear liga
 router.post('/', verifyToken, async (req, res) => {
   const { nombre, clave, max_jugadores } = req.body;
-  const userId = req.user.id;
-
-  if (!nombre || !clave || !max_jugadores)
-    return res.status(400).json({ message: 'Todos los campos son obligatorios' });
+  const idUser = req.user.id;
+  if (!nombre || !clave || !max_jugadores) return res.status(400).json({ message: 'Todos los campos son obligatorios' });
 
   try {
     const result = await db.query(
       'INSERT INTO ligas (nombre, clave, max_jugadores) VALUES ($1, $2, $3) RETURNING id_liga',
       [nombre, clave, max_jugadores]
     );
-    const id_liga = result.rows[0].id_liga;
+    const idLiga = result.rows[0].id_liga;
 
-    // Creador se une como owner
     await db.query(
-      'INSERT INTO users_liga (id_user, id_liga, rol, dinero, puntos) VALUES ($1, $2, $3, 100, 0)',
-      [userId, id_liga, 'owner']
+      'INSERT INTO users_liga (id_user, id_liga, rol, dinero, puntos) VALUES ($1, $2, $3, $4, $5)',
+      [idUser, idLiga, 'owner', 100, 0]
     );
 
-    res.status(201).json({ message: 'Liga creada', id_liga, rol: 'owner' });
+    await db.query(
+      'UPDATE ligas SET numero_jugadores = 1 WHERE id_liga = $1',
+      [idLiga]
+    );
+
+    res.status(201).json({ message: 'Liga creada', id_liga: idLiga });
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Error creando liga' });
@@ -142,28 +136,29 @@ router.post('/', verifyToken, async (req, res) => {
 
 // Unirse a liga
 router.post('/:id_liga/join', verifyToken, async (req, res) => {
+  const idUser = req.user.id;
   const { id_liga } = req.params;
-  const userId = req.user.id;
+  const { clave } = req.body;
 
   try {
-    const ligaResult = await db.query('SELECT * FROM ligas WHERE id_liga=$1', [id_liga]);
-    const liga = ligaResult.rows[0];
-    if (!liga) return res.status(404).json({ message: 'Liga no encontrada' });
+    const ligaResult = await db.query('SELECT * FROM ligas WHERE id_liga = $1', [id_liga]);
+    if (!ligaResult.rows[0]) return res.status(404).json({ message: 'Liga no encontrada' });
 
-    const usersCount = await db.query(
-      'SELECT COUNT(*) FROM users_liga WHERE id_liga=$1',
+    const liga = ligaResult.rows[0];
+    if (liga.clave !== clave) return res.status(403).json({ message: 'Clave incorrecta' });
+    if (liga.numero_jugadores >= liga.max_jugadores) return res.status(403).json({ message: 'Liga llena' });
+
+    await db.query(
+      'INSERT INTO users_liga (id_user, id_liga, rol, dinero, puntos) VALUES ($1, $2, $3, $4, $5)',
+      [idUser, id_liga, 'user', 100, 0]
+    );
+
+    await db.query(
+      'UPDATE ligas SET numero_jugadores = numero_jugadores + 1 WHERE id_liga = $1',
       [id_liga]
     );
 
-    if (parseInt(usersCount.rows[0].count) >= liga.max_jugadores)
-      return res.status(403).json({ message: 'Liga llena' });
-
-    await db.query(
-      'INSERT INTO users_liga (id_user, id_liga, rol, dinero, puntos) VALUES ($1, $2, $3, 100, 0)',
-      [userId, id_liga, 'user']
-    );
-
-    res.json({ message: 'Te has unido a la liga', rol: 'user' });
+    res.json({ message: 'Te has unido a la liga', id_liga });
   } catch (err) {
     console.error(err);
     if (err.code === '23505') return res.status(400).json({ message: 'Ya estás en esta liga' });
@@ -175,8 +170,8 @@ router.post('/:id_liga/join', verifyToken, async (req, res) => {
 router.delete('/:id_liga', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
   const { id_liga } = req.params;
   try {
-    await db.query('DELETE FROM users_liga WHERE id_liga=$1', [id_liga]);
-    await db.query('DELETE FROM ligas WHERE id_liga=$1', [id_liga]);
+    await db.query('DELETE FROM users_liga WHERE id_liga = $1', [id_liga]);
+    await db.query('DELETE FROM ligas WHERE id_liga = $1', [id_liga]);
     res.json({ message: 'Liga eliminada' });
   } catch (err) {
     console.error(err);
@@ -188,33 +183,37 @@ router.delete('/:id_liga', verifyToken, requireLeagueRole(['owner']), async (req
 router.put('/:id_liga/make-admin/:id_user', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
   const { id_liga, id_user } = req.params;
   try {
-    await db.query('UPDATE users_liga SET rol=$1 WHERE id_user=$2 AND id_liga=$3', ['admin', id_user, id_liga]);
+    await db.query(
+      'UPDATE users_liga SET rol = $1 WHERE id_user = $2 AND id_liga = $3',
+      ['admin', id_user, id_liga]
+    );
     res.json({ message: 'Usuario ascendido a admin' });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Error al ascender usuario' });
+    res.status(500).json({ message: 'Error al ascender a admin' });
   }
 });
 
-// Ver mis ligas
+// Ver ligas de un usuario
 app.get('/api/mis-ligas', verifyToken, async (req, res) => {
-  const userId = req.user.id;
   try {
     const result = await db.query(`
       SELECT l.id_liga, l.nombre, ul.dinero, ul.puntos, ul.rol
       FROM users_liga ul
       JOIN ligas l ON l.id_liga = ul.id_liga
-      WHERE ul.id_user=$1
-    `, [userId]);
+      WHERE ul.id_user = $1
+    `, [req.user.id]);
+
     res.json(result.rows);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Error obteniendo ligas' });
+    res.status(500).json({ error: 'Error obteniendo ligas' });
   }
 });
 
-// Montar router de ligas
 app.use('/api/ligas', router);
 
-// 🔹 Export para Vercel
-module.exports.handler = serverless(app);
+// 🔹 Server
+app.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+});
