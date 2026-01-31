@@ -12,6 +12,20 @@ const secretKey = 'your-secret-key';
 
 app.use(cors());
 
+// Middleware CORS para Vercel
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', 'https://trebol-league.vercel.app'); // tu front
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  // responder preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+
+  next();
+});
+
 app.use(bodyParser.json());
 
 // Public route
