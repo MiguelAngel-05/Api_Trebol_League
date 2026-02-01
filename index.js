@@ -10,43 +10,32 @@ const secretKey = 'your-secret-key';
 
 const mercadoRouter = express.Router();
 
-// -------------------
-// Middleware general
-// -------------------
-
-// Parse JSON
 app.use(bodyParser.json());
 
-// CORS para permitir que el front (Vercel) haga peticiones al back
+// CORS para permitir que el front de vercel haga peticiones al back porque daba errores
 app.use(cors({
-  origin: 'https://trebol-league.vercel.app', // tu frontend
+  origin: 'https://trebol-league.vercel.app',
   methods: ['GET','POST','PUT','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// -------------------
-// Middleware de autenticación
-// -------------------
+// esto es para la autenticacion
 
-// Verifica si el usuario envía un token válido
+// verifica si el usuario envia un token valido
 function verifyToken(req, res, next) {
   const bearerHeader = req.headers['authorization'];
-  if (!bearerHeader) return res.sendStatus(403); // sin token -> 403
+  if (!bearerHeader) return res.sendStatus(403);
 
   try {
     const token = bearerHeader.split(' ')[1];
-    req.user = jwt.verify(token, secretKey); // decodifica el token
+    req.user = jwt.verify(token, secretKey); 
     next();
   } catch (err) {
     res.sendStatus(403);
   }
 }
 
-// -------------------
-// Middleware de roles
-// -------------------
-
-// Comprueba si el usuario tiene un rol específico dentro de la liga (owner, admin)
+// comprueba si el usuario tiene un rol específico dentro de la liga
 function requireLeagueRole(roles) {
   return async (req, res, next) => {
     const id_liga = req.params.id_liga || req.body.id_liga;
@@ -64,14 +53,10 @@ function requireLeagueRole(roles) {
   };
 }
 
-// -------------------
-// Rutas públicas
-// -------------------
-
-// Ruta pública de prueba
+// ruta publica de prueba
 app.get('/api/data', (req, res) => res.json({ message: 'This is public data' }));
 
-// Registro de usuario
+// registro de usuario
 app.post('/api/register', async (req, res) => {
   const { username, email, password } = req.body;
   if (!username || !email || !password) return res.status(400).json({ error: "Todos los campos son obligatorios." });
@@ -89,7 +74,7 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// Login de usuario
+// login de usuario
 app.post('/api/login', async (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.status(400).json({ message:'Username y password requeridos' });
@@ -110,15 +95,15 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// Ruta protegida de prueba
+// ruta protegida de prueba
 app.get('/api/protected', verifyToken, (req,res) => res.json({ message:'Protected route', user:req.user }));
 
-// -------------------
-// Rutas de ligas
-// -------------------
+
+// rutas de ligas
+
 const router = express.Router();
 
-// Crear una liga (el creador es automáticamente owner)
+// crear una liga
 router.post('/', verifyToken, async (req,res)=>{
   const { nombre, clave, max_jugadores } = req.body;
   const idUser = req.user.id;
@@ -126,20 +111,20 @@ router.post('/', verifyToken, async (req,res)=>{
   if (!nombre || !clave || !max_jugadores) return res.status(400).json({ message:'Todos los campos son obligatorios' });
 
   try {
-    // Crear la liga en la tabla "ligas"
+    // crear la liga en la tabla de ligas
     const result = await db.query(
       'INSERT INTO ligas (nombre, clave, max_jugadores) VALUES ($1,$2,$3) RETURNING id_liga',
       [nombre, clave, max_jugadores]
     );
     const idLiga = result.rows[0].id_liga;
 
-    // Insertar al creador en "users_liga" como owner con dinero y puntos iniciales
+    // añadiral creador en users_liga como owner con dinero y puntos iniciales
     await db.query(
       'INSERT INTO users_liga (id_user, id_liga, rol, dinero, puntos) VALUES ($1,$2,$3,$4,$5)',
       [idUser, idLiga, 'owner', 100,0]
     );
 
-    // Actualizar el número de jugadores a 1
+    // atualizar el numero de jugadores a 1
     await db.query('UPDATE ligas SET numero_jugadores=1 WHERE id_liga=$1',[idLiga]);
 
     res.status(201).json({ message:'Liga creada', id_liga:idLiga });
@@ -149,7 +134,7 @@ router.post('/', verifyToken, async (req,res)=>{
   }
 });
 
-// Unirse a una liga (rol user)
+// unirse a una liga 
 router.post('/:id_liga/join', verifyToken, async (req,res)=>{
   const idUser = req.user.id;
   const { id_liga } = req.params;
@@ -163,12 +148,12 @@ router.post('/:id_liga/join', verifyToken, async (req,res)=>{
     if(liga.clave !== clave) return res.status(403).json({ message:'Clave incorrecta' });
     if(liga.numero_jugadores >= liga.max_jugadores) return res.status(403).json({ message:'Liga llena' });
 
-    // Insertar al usuario como "user" en la liga
+    // insertar al usuario como user en la liga
     await db.query('INSERT INTO users_liga (id_user,id_liga,rol,dinero,puntos) VALUES ($1,$2,$3,$4,$5)',
       [idUser, id_liga, 'user',100,0]
     );
 
-    // Incrementar número de jugadores
+    // aumentar el numero de jugadores
     await db.query('UPDATE ligas SET numero_jugadores = numero_jugadores + 1 WHERE id_liga=$1',[id_liga]);
 
     res.json({ message:'Te has unido a la liga', id_liga });
@@ -179,7 +164,7 @@ router.post('/:id_liga/join', verifyToken, async (req,res)=>{
   }
 });
 
-// Eliminar liga (solo owner)
+// eliminar una liga (solo el owner)
 router.delete('/:id_liga', verifyToken, requireLeagueRole(['owner']), async(req,res)=>{
   const { id_liga } = req.params;
   try {
@@ -192,7 +177,7 @@ router.delete('/:id_liga', verifyToken, requireLeagueRole(['owner']), async(req,
   }
 });
 
-// Ascender un usuario a admin (solo owner)
+// ascender un usuario a admin (solo owner)
 router.put('/:id_liga/make-admin/:id_user', verifyToken, requireLeagueRole(['owner']), async(req,res)=>{
   const { id_liga, id_user } = req.params;
   try{
@@ -375,7 +360,7 @@ mercadoRouter.get('/:id_liga/mis-futbolistas', verifyToken, async (req, res) => 
 
 app.use('/api/mercado', mercadoRouter);
 
-// -------------------
-// Export para Vercel (Serverless)
-// -------------------
+
+// Export para Vercel
+
 module.exports = app;
