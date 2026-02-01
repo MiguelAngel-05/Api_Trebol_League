@@ -13,11 +13,18 @@ const mercadoRouter = express.Router();
 app.use(bodyParser.json());
 
 // CORS para permitir que el front de vercel haga peticiones al back porque daba errores
-app.use(cors({
-  origin: 'https://trebol-league.vercel.app',
-  methods: ['GET','POST','PUT','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', 'https://trebol-league.vercel.app'); // o '*' si quieres permitir todos
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  // Responde a preflight OPTIONS
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+
+  next();
+});
 
 // esto es para la autenticacion
 
