@@ -141,6 +141,32 @@ router.post('/', verifyToken, async (req,res)=>{
   }
 });
 
+// obtener id de liga por nombre y clave
+router.post('/get-id-by-credentials', verifyToken, async (req, res) => {
+  const { nombre, clave } = req.body;
+
+  if (!nombre || !clave) {
+    return res.status(400).json({ message: 'Nombre y clave requeridos' });
+  }
+
+  try {
+    const result = await db.query(
+      'SELECT id_liga FROM ligas WHERE nombre = $1 AND clave = $2',
+      [nombre, clave]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Liga no encontrada o clave incorrecta' });
+    }
+
+    res.json({ id_liga: result.rows[0].id_liga });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error obteniendo la liga' });
+  }
+});
+
+
 // unirse a una liga 
 router.post('/:id_liga/join', verifyToken, async (req,res)=>{
   const idUser = req.user.id;
