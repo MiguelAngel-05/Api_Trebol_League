@@ -60,6 +60,17 @@ async function initLeagueTables() {
       );
     `);
 
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS mercado_liga (
+        id_liga INT,
+        id_futbolista INT,
+        fecha_generacion TIMESTAMP NOT NULL,
+        PRIMARY KEY (id_liga, id_futbolista),
+        FOREIGN KEY (id_liga) REFERENCES ligas(id_liga) ON DELETE CASCADE,
+        FOREIGN KEY (id_futbolista) REFERENCES futbolistas(id_futbolista) ON DELETE CASCADE
+      );  
+    `);
+
     console.log('Tablas de Trebol League creadas correctamente');
 
   } catch (err) {

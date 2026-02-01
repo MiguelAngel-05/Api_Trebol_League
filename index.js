@@ -241,155 +241,76 @@ app.get('/api/mis-ligas', verifyToken, async(req,res)=>{
 });
 
 
-// ver mercado de la liga
 mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
 
   try {
-    const result = await db.query(`
-      SELECT f.id_futbolista, f.nombre, f.posicion, f.dorsal, f.precio
-      FROM futbolistas f
-      WHERE f.id_futbolista NOT IN (
-        SELECT id_futbolista
-        FROM futbolista_user_liga
-        WHERE id_liga = $1
-      )
+
+    // comprobar si hay mercado y si sigue siendo válido
+    const mercadoActual = await db.query(`
+      SELECT fecha_generacion
+      FROM mercado_liga
+      WHERE id_liga = $1
+      LIMIT 1
     `, [id_liga]);
 
-    res.json(result.rows);
+    let regenerar = false;
+
+    if (mercadoActual.rows.length === 0) {
+      regenerar = true;
+    } else {
+      const fecha = new Date(mercadoActual.rows[0].fecha_generacion);
+      const ahora = new Date();
+      const diffHoras = (ahora - fecha) / (1000 * 60 * 60);
+      if (diffHoras >= 24) regenerar = true;
+    }
+
+    // regenerar mercado (5 jugadores nuevos)
+    if (regenerar) {
+
+      await db.query(
+        'DELETE FROM mercado_liga WHERE id_liga = $1',
+        [id_liga]
+      );
+
+      const nuevosJugadores = await db.query(`
+        SELECT id_futbolista
+        FROM futbolistas
+        ORDER BY RANDOM()
+        LIMIT 5
+      `);
+
+      for (const j of nuevosJugadores.rows) {
+        await db.query(`
+          INSERT INTO mercado_liga (id_liga, id_futbolista, fecha_generacion)
+          VALUES ($1, $2, NOW())
+        `, [id_liga, j.id_futbolista]);
+      }
+    }
+
+    // devolver mercado
+    const mercado = await db.query(`
+      SELECT 
+        f.id_futbolista,
+        f.nombre,
+        f.posicion,
+        f.dorsal,
+        f.precio
+      FROM mercado_liga ml
+      JOIN futbolistas f ON f.id_futbolista = ml.id_futbolista
+      WHERE ml.id_liga = $1
+    `, [id_liga]);
+
+    res.json(mercado.rows);
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Error obteniendo mercado' });
   }
 });
 
-// comprar a un jugadorr
-mercadoRouter.post('/:id_liga/comprar/:id_futbolista', verifyToken, async (req, res) => {
-  const { id_liga, id_futbolista } = req.params;
-  const id_user = req.user.id;
 
-  try {
-    // veo el precio del futbolista
-    const futbolistaResult = await db.query(
-      'SELECT precio FROM futbolistas WHERE id_futbolista = $1',
-      [id_futbolista]
-    );
-
-    if (!futbolistaResult.rows[0]) {
-      return res.status(404).json({ message: 'Futbolista no existe' });
-    }
-
-    const precio = futbolistaResult.rows[0].precio;
-
-    // veo el dinero del que ficha en la liga
-    const userLiga = await db.query(
-      'SELECT dinero FROM users_liga WHERE id_user = $1 AND id_liga = $2',
-      [id_user, id_liga]
-    );
-
-    if (!userLiga.rows[0]) {
-      return res.status(403).json({ message: 'No estás en esta liga' });
-    }
-
-    if (userLiga.rows[0].dinero < precio) {
-      return res.status(400).json({ message: 'No tienes dinero suficiente' });
-    }
-
-    // comprobamos de q si ya esta comprado
-    const exists = await db.query(
-      'SELECT 1 FROM futbolista_user_liga WHERE id_liga=$1 AND id_futbolista=$2',
-      [id_liga, id_futbolista]
-    );
-
-    if (exists.rows.length > 0) {
-      return res.status(400).json({ message: 'Este futbolista ya está en esta liga' });
-    }
-
-    // 4. se compra
-    await db.query(
-      'INSERT INTO futbolista_user_liga (id_user, id_liga, id_futbolista) VALUES ($1,$2,$3)',
-      [id_user, id_liga, id_futbolista]
-    );
-
-    await db.query(
-      'UPDATE users_liga SET dinero = dinero - $1 WHERE id_user=$2 AND id_liga=$3',
-      [precio, id_user, id_liga]
-    );
-
-    res.json({ message: 'Futbolista comprado', precio });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error al comprar futbolista' });
-  }
-});
-
-// vender al futbolista
-mercadoRouter.post('/:id_liga/vender/:id_futbolista', verifyToken, async (req, res) => {
-  const { id_liga, id_futbolista } = req.params;
-  const id_user = req.user.id;
-
-  try {
-    // veerifico si es mio o de quien es
-    const owned = await db.query(
-      `SELECT 1 FROM futbolista_user_liga
-       WHERE id_user=$1 AND id_liga=$2 AND id_futbolista=$3`,
-      [id_user, id_liga, id_futbolista]
-    );
-
-    if (owned.rows.length === 0) {
-      return res.status(403).json({ message: 'Este futbolista no es tuyo' });
-    }
-
-    // ver el precio del futbolista
-    const futbolistaResult = await db.query(
-      'SELECT precio FROM futbolistas WHERE id_futbolista = $1',
-      [id_futbolista]
-    );
-
-    const precio = futbolistaResult.rows[0].precio;
-
-    // elimino al futbolista de mi equipo
-    await db.query(
-      'DELETE FROM futbolista_user_liga WHERE id_user=$1 AND id_liga=$2 AND id_futbolista=$3',
-      [id_user, id_liga, id_futbolista]
-    );
-
-    // esto es pa devolver dinero q valia el futbolista
-    await db.query(
-      'UPDATE users_liga SET dinero = dinero + $1 WHERE id_user=$2 AND id_liga=$3',
-      [precio, id_user, id_liga]
-    );
-
-    res.json({ message: 'Futbolista vendido', precio });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error al vender futbolista' });
-  }
-});
-
-// ver mis futbolistas
-mercadoRouter.get('/:id_liga/mis-futbolistas', verifyToken, async (req, res) => {
-  const { id_liga } = req.params;
-  const id_user = req.user.id;
-
-  try {
-    const result = await db.query(`
-      SELECT f.id_futbolista, f.nombre, f.posicion, f.dorsal, f.precio
-      FROM futbolista_user_liga ful
-      JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
-      WHERE ful.id_user = $1 AND ful.id_liga = $2
-    `, [id_user, id_liga]);
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error obteniendo tus futbolistas' });
-  }
-});
-
-app.use('/api/mercado', mercadoRouter);
 
 
 // Export para Vercel
-
 module.exports = app;
