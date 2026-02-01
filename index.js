@@ -128,7 +128,7 @@ router.post('/', verifyToken, async (req,res)=>{
     // añadiral creador en users_liga como owner con dinero y puntos iniciales
     await db.query(
       'INSERT INTO users_liga (id_user, id_liga, rol, dinero, puntos) VALUES ($1,$2,$3,$4,$5)',
-      [idUser, idLiga, 'owner', 100,0]
+      [idUser, idLiga, 'owner', 10000000,0]
     );
 
     // atualizar el numero de jugadores a 1
@@ -183,7 +183,7 @@ router.post('/:id_liga/join', verifyToken, async (req,res)=>{
 
     // insertar al usuario como user en la liga
     await db.query('INSERT INTO users_liga (id_user,id_liga,rol,dinero,puntos) VALUES ($1,$2,$3,$4,$5)',
-      [idUser, id_liga, 'user',100,0]
+      [idUser, id_liga, 'user',10000000,0]
     );
 
     // aumentar el numero de jugadores
@@ -228,7 +228,7 @@ app.use('/api/ligas', router);
 app.get('/api/mis-ligas', verifyToken, async(req,res)=>{
   try{
     const result = await db.query(
-      `SELECT l.id_liga,l.nombre,ul.dinero,ul.puntos,ul.rol
+      `SELECT l.id_liga,l.nombre,l.numero_jugadores,l.max_jugadores,ul.dinero,ul.puntos,ul.rol
        FROM users_liga ul
        JOIN ligas l ON l.id_liga=ul.id_liga
        WHERE ul.id_user=$1`,[req.user.id]
@@ -242,7 +242,6 @@ app.get('/api/mis-ligas', verifyToken, async(req,res)=>{
 
 
 // ver mercado de la liga
-
 mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
 
@@ -265,7 +264,6 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
 });
 
 // comprar a un jugadorr
-
 mercadoRouter.post('/:id_liga/comprar/:id_futbolista', verifyToken, async (req, res) => {
   const { id_liga, id_futbolista } = req.params;
   const id_user = req.user.id;
@@ -326,7 +324,6 @@ mercadoRouter.post('/:id_liga/comprar/:id_futbolista', verifyToken, async (req, 
 });
 
 // vender al futbolista
-
 mercadoRouter.post('/:id_liga/vender/:id_futbolista', verifyToken, async (req, res) => {
   const { id_liga, id_futbolista } = req.params;
   const id_user = req.user.id;
@@ -371,7 +368,6 @@ mercadoRouter.post('/:id_liga/vender/:id_futbolista', verifyToken, async (req, r
 });
 
 // ver mis futbolistas
-
 mercadoRouter.get('/:id_liga/mis-futbolistas', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const id_user = req.user.id;
