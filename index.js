@@ -309,7 +309,7 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
   }
 });
 
-
+app.use('/api/mercado', mercadoRouter);
 
 
 // Export para Vercel
