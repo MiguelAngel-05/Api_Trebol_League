@@ -86,5 +86,49 @@ async function runTests() {
     }
 }
 
+// 5. Crear liga
+let idLiga;
+try {
+    const res = await request({
+        hostname: 'localhost',
+        port: 3001,
+        path: '/api/ligas',
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+        }
+    }, {
+        nombre: 'Liga Test',
+        clave: '1234',
+        max_jugadores: 5
+    });
+
+    console.log('Crear liga:', res.statusCode === 201 ? 'PASS' : 'FAIL', res.body);
+    idLiga = res.body.id_liga;
+} catch (err) {
+    console.error('Crear liga Error:', err);
+}
+
+// 6. Ver mercado
+if (idLiga) {
+    try {
+        const res = await request({
+            hostname: 'localhost',
+            port: 3001,
+            path: `/api/mercado/${idLiga}`,
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`
+            }
+        });
+        console.log('Ver mercado:', res.statusCode === 200 ? 'PASS' : 'FAIL', res.body);
+    } catch (err) {
+        console.error('Mercado Error:', err);
+    }
+}
+
+
+
 // Wait for server to start (manual delay for simplicity in this script context)
 setTimeout(runTests, 2000);
