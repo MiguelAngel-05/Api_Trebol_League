@@ -120,7 +120,7 @@ router.post('/', verifyToken, async (req,res)=>{
   try {
     // crear la liga en la tabla de ligas
     const result = await db.query(
-      'INSERT INTO ligas (nombre, numero_jugadores, clave) VALUES ($1,$2,$3) RETURNING id_liga',
+      'INSERT INTO ligas (nombre, clave, max_jugadores) VALUES ($1,$2,$3) RETURNING id_liga',
       [nombre, clave, max_jugadores]
     );
     const idLiga = result.rows[0].id_liga;
