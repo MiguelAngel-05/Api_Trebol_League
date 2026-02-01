@@ -301,7 +301,12 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
       WHERE ml.id_liga = $1
     `, [id_liga]);
 
-    res.json(mercado.rows);
+    res.json({
+      jugadores: mercado.rows,
+      fecha_generacion: mercadoActual.rows.length
+        ? mercadoActual.rows[0].fecha_generacion
+        : new Date()
+    });
 
   } catch (err) {
     console.error(err);
