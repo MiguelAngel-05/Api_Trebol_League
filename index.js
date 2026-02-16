@@ -282,7 +282,7 @@ router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
   }
 });
 
-// Obtener historial de transferencias
+// Historial de compras y ventas de la liga
 router.get('/:id_liga/historial', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
 
@@ -290,25 +290,72 @@ router.get('/:id_liga/historial', verifyToken, async (req, res) => {
     const result = await db.query(`
       SELECT 
         h.id_historial,
-        h.monto,
-        h.fecha,
         h.tipo,
-        f.nombre as nombre_jugador,
-        u_vend.username as vendedor,
-        u_comp.username as comprador
-      FROM historial_transferencias h
-      JOIN futbolistas f ON f.id_futbolista = h.id_futbolista
-      LEFT JOIN users u_vend ON u_vend.id = h.id_vendedor
-      LEFT JOIN users u_comp ON u_comp.id = h.id_comprador
+        h.precio,
+        h.fecha,
+        u1.username AS comprador,
+        u2.username AS vendedor,
+        f.nombre AS jugador
+      FROM historial h
+      LEFT JOIN users u1 ON h.id_comprador = u1.id
+      LEFT JOIN users u2 ON h.id_vendedor = u2.id
+      JOIN futbolistas f ON h.id_futbolista = f.id_futbolista
       WHERE h.id_liga = $1
       ORDER BY h.fecha DESC
-      LIMIT 50
     `, [id_liga]);
 
     res.json(result.rows);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Error obteniendo historial' });
+    res.status(500).json({ message: 'Error cargando historial' });
+  }
+});
+
+
+// Poner un jugador en venta (Desde ListaJugadores)
+router.post('/:id_liga/vender', verifyToken, async (req, res) => {
+  const { id_futbolista, precio_venta } = req.body;
+  const { id_liga } = req.params;
+
+  try {
+    await db.query(
+      `UPDATE futbolista_user_liga SET en_venta = true, precio_venta = $1 
+       WHERE id_user = $2 AND id_liga = $3 AND id_futbolista = $4`,
+      [precio_venta, req.user.id, id_liga, id_futbolista]
+    );
+    res.json({ message: 'Jugador puesto en venta' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al poner en venta' });
+  }
+});
+
+// Comprar jugador directamente a otro usuario (Desde Mercado)
+mercadoRouter.post('/compra-directa', verifyToken, async (req, res) => {
+  const { id_liga, id_futbolista, id_vendedor, precio } = req.body;
+  const idComprador = req.user.id;
+
+  try {
+    // 1. Restar dinero al comprador y sumar al vendedor
+    await db.query('UPDATE users_liga SET dinero = dinero - $1 WHERE id_user = $2 AND id_liga = $3', [precio, idComprador, id_liga]);
+    await db.query('UPDATE users_liga SET dinero = dinero + $1 WHERE id_user = $2 AND id_liga = $3', [precio, id_vendedor, id_liga]);
+
+    // 2. Cambiar dueño del jugador
+    await db.query(
+      `UPDATE futbolista_user_liga SET id_user = $1, en_venta = false, precio_venta = 0 
+       WHERE id_user = $2 AND id_liga = $3 AND id_futbolista = $4`,
+      [idComprador, id_vendedor, id_liga, id_futbolista]
+    );
+
+    // 3. Registrar en historial
+    await db.query(
+      `INSERT INTO historial_transferencias (id_liga, id_futbolista, id_vendedor, id_comprador, monto, tipo)
+       VALUES ($1, $2, $3, $4, $5, 'compra_usuario')`,
+      [id_liga, id_futbolista, id_vendedor, idComprador, precio]
+    );
+
+    res.json({ message: 'Fichaje realizado con éxito' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error en la transacción' });
   }
 });
 
