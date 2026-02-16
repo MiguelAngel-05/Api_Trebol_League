@@ -291,12 +291,12 @@ router.get('/:id_liga/historial', verifyToken, async (req, res) => {
       SELECT 
         h.id_historial,
         h.tipo,
-        h.precio,
+        h.monto,
         h.fecha,
         u1.username AS comprador,
         u2.username AS vendedor,
         f.nombre AS jugador
-      FROM historial h
+      FROM historial_transferencias h
       LEFT JOIN users u1 ON h.id_comprador = u1.id
       LEFT JOIN users u2 ON h.id_vendedor = u2.id
       JOIN futbolistas f ON h.id_futbolista = f.id_futbolista
