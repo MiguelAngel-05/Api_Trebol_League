@@ -233,10 +233,22 @@ router.get('/:id_liga/datos-usuario', verifyToken, async (req, res) => {
   const idUser = req.user.id;
 
   try {
-    const result = await db.query(
-      'SELECT dinero, puntos, rol FROM users_liga WHERE id_user = $1 AND id_liga = $2',
-      [idUser, id_liga]
-    );
+    const result = await db.query(`
+      SELECT 
+        ul.dinero, 
+        ul.puntos, 
+        ul.rol,
+        -- Subconsulta: Suma de todas mis pujas activas en esta liga
+        (SELECT COALESCE(SUM(monto), 0) FROM pujas 
+         WHERE id_user = $1 AND id_liga = $2) as total_pujado,
+         
+        -- Subconsulta: Suma de precios de mis jugadores en venta
+        (SELECT COALESCE(SUM(precio_venta), 0) FROM futbolista_user_liga 
+         WHERE id_user = $1 AND id_liga = $2 AND en_venta = true) as total_ventas_esperadas
+
+      FROM users_liga ul 
+      WHERE ul.id_user = $1 AND ul.id_liga = $2
+    `, [idUser, id_liga]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ message: 'Usuario no encontrado en esta liga' });
@@ -245,7 +257,7 @@ router.get('/:id_liga/datos-usuario', verifyToken, async (req, res) => {
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Error obteniendo datos del usuario en la liga' });
+    res.status(500).json({ message: 'Error obteniendo datos del usuario' });
   }
 });
 
