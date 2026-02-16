@@ -249,6 +249,39 @@ router.get('/:id_liga/datos-usuario', verifyToken, async (req, res) => {
   }
 });
 
+router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const idUser = req.user.id;
+
+  try {
+    const result = await db.query(`
+      SELECT 
+        f.id_futbolista,
+        f.nombre,
+        f.posicion,
+        f.precio,
+        f.equipo,
+        f.media
+      FROM futbolista_user_liga ful
+      JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
+      WHERE ful.id_liga = $1 AND ful.id_user = $2
+      ORDER BY 
+        CASE 
+          WHEN f.posicion = 'PT' THEN 1
+          WHEN f.posicion = 'DF' THEN 2
+          WHEN f.posicion = 'MC' THEN 3
+          WHEN f.posicion = 'DL' THEN 4
+          ELSE 5
+        END
+    `, [id_liga, idUser]);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error obteniendo tus jugadores' });
+  }
+});
+
 app.use('/api/ligas', router);
 
 // Ver ligas de un usuario
