@@ -282,6 +282,36 @@ router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
   }
 });
 
+// Obtener historial de transferencias
+router.get('/:id_liga/historial', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+
+  try {
+    const result = await db.query(`
+      SELECT 
+        h.id_historial,
+        h.monto,
+        h.fecha,
+        h.tipo,
+        f.nombre as nombre_jugador,
+        u_vend.username as vendedor,
+        u_comp.username as comprador
+      FROM historial_transferencias h
+      JOIN futbolistas f ON f.id_futbolista = h.id_futbolista
+      LEFT JOIN users u_vend ON u_vend.id = h.id_vendedor
+      LEFT JOIN users u_comp ON u_comp.id = h.id_comprador
+      WHERE h.id_liga = $1
+      ORDER BY h.fecha DESC
+      LIMIT 50
+    `, [id_liga]);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error obteniendo historial' });
+  }
+});
+
 app.use('/api/ligas', router);
 
 // Ver ligas de un usuario
@@ -306,12 +336,9 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
 
   try {
-    // Comprobar si hay mercado y si sigue siendo válido (menos de 24h)
+    // Comprobar si hay mercado y si sigue siendo válido
     const mercadoActual = await db.query(`
-      SELECT fecha_generacion
-      FROM mercado_liga
-      WHERE id_liga = $1
-      LIMIT 1
+      SELECT fecha_generacion FROM mercado_liga WHERE id_liga = $1 LIMIT 1
     `, [id_liga]);
 
     let regenerar = false;
@@ -325,16 +352,78 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
       if (diffHoras >= 24) regenerar = true;
     }
 
-    if (regenerar) {
-      await db.query('DELETE FROM mercado_liga WHERE id_liga = $1', [id_liga]);
+    if (regenerar && mercadoActual.rows.length > 0) {
+      console.log(`Regenerando mercado para liga ${id_liga}... Resolviendo pujas.`);
 
-      // Selecciona 5 IDs aleatorios de la tabla de futbolistas
+      // 1. Obtener todos los jugadores que estaban en el mercado
+      const jugadoresEnMercado = await db.query(
+        'SELECT id_futbolista FROM mercado_liga WHERE id_liga = $1',
+        [id_liga]
+      );
+
+      for (const j of jugadoresEnMercado.rows) {
+        const idFutbolista = j.id_futbolista;
+
+        // 2. Buscar la puja MÁS ALTA para este jugador
+        const pujaGanadora = await db.query(`
+          SELECT * FROM pujas 
+          WHERE id_liga = $1 AND id_futbolista = $2 
+          ORDER BY monto DESC 
+          LIMIT 1
+        `, [id_liga, idFutbolista]);
+
+        if (pujaGanadora.rows.length > 0) {
+          const ganador = pujaGanadora.rows[0];
+          const idGanador = ganador.id_user;
+          const montoPujado = Number(ganador.monto);
+
+          // 3. Verificar (otra vez por seguridad) si el ganador tiene dinero
+          const saldoGanador = await db.query(
+            'SELECT dinero FROM users_liga WHERE id_user = $1 AND id_liga = $2',
+            [idGanador, id_liga]
+          );
+
+          if (saldoGanador.rows.length > 0 && Number(saldoGanador.rows[0].dinero) >= montoPujado) {
+            // A) Restar dinero al ganador
+            await db.query(
+              'UPDATE users_liga SET dinero = dinero - $1 WHERE id_user = $2 AND id_liga = $3',
+              [montoPujado, idGanador, id_liga]
+            );
+
+            // B) Dar jugador al ganador (Tabla futbolista_user_liga)
+            await db.query(
+              'INSERT INTO futbolista_user_liga (id_user, id_liga, id_futbolista) VALUES ($1, $2, $3)',
+              [idGanador, id_liga, idFutbolista]
+            );
+
+            // C) Guardar en Historial
+            await db.query(`
+              INSERT INTO historial_transferencias 
+              (id_liga, id_futbolista, id_vendedor, id_comprador, monto, fecha, tipo)
+              VALUES ($1, $2, NULL, $3, $4, NOW(), 'compra_mercado')
+            `, [id_liga, idFutbolista, idGanador, montoPujado]); // Vendedor NULL = Sistema
+
+            console.log(`Jugador ${idFutbolista} vendido a usuario ${idGanador} por ${montoPujado}`);
+          }
+        }
+      }
+
+      // 4. Limpiar las pujas de ayer (ya procesadas o perdidas)
+      await db.query('DELETE FROM pujas WHERE id_liga = $1', [id_liga]);
+      
+      // 5. Borrar mercado viejo
+      await db.query('DELETE FROM mercado_liga WHERE id_liga = $1', [id_liga]);
+    }
+
+    if (regenerar) {
       const nuevosJugadores = await db.query(`
-        SELECT id_futbolista
-        FROM futbolistas
-        ORDER BY RANDOM()
+        SELECT id_futbolista FROM futbolistas 
+        WHERE id_futbolista NOT IN (
+          SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $1
+        )
+        ORDER BY RANDOM() 
         LIMIT 20
-      `);
+      `, [id_liga]);
 
       for (const j of nuevosJugadores.rows) {
         await db.query(`
@@ -344,7 +433,7 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
       }
     }
 
-    // Devolver mercado
+    // Devolver mercado actual (con JOIN para escudos y media)
     const mercado = await db.query(`
       SELECT 
         f.id_futbolista,
@@ -358,16 +447,75 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
       WHERE ml.id_liga = $1
     `, [id_liga]);
 
+    // Calcular fecha para el contador
+    const fechaGen = mercadoActual.rows.length 
+      ? mercadoActual.rows[0].fecha_generacion 
+      : new Date();
+
     res.json({
       jugadores: mercado.rows,
-      fecha_generacion: mercadoActual.rows.length
-        ? mercadoActual.rows[0].fecha_generacion
-        : new Date()
+      fecha_generacion: fechaGen
     });
 
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Error obteniendo mercado' });
+  }
+});
+
+// Realizar una puja por un jugador del mercado
+mercadoRouter.post('/pujar', verifyToken, async (req, res) => {
+  const { id_liga, id_futbolista, monto } = req.body;
+  const idUser = req.user.id;
+
+  if (!id_liga || !id_futbolista || !monto) {
+    return res.status(400).json({ message: 'Datos incompletos' });
+  }
+
+  try {
+    // 1. Verificar que el jugador está en el mercado de esa liga
+    const checkMercado = await db.query(
+      'SELECT * FROM mercado_liga WHERE id_liga = $1 AND id_futbolista = $2',
+      [id_liga, id_futbolista]
+    );
+    if (checkMercado.rows.length === 0) {
+      return res.status(404).json({ message: 'El jugador no está en el mercado' });
+    }
+
+    // 2. Verificar precio base del jugador
+    const jugadorInfo = await db.query('SELECT precio, nombre FROM futbolistas WHERE id_futbolista = $1', [id_futbolista]);
+    const precioBase = Number(jugadorInfo.rows[0].precio);
+
+    if (monto < precioBase) {
+      return res.status(400).json({ message: `La puja debe ser al menos el valor de mercado (${precioBase})` });
+    }
+
+    // 3. Verificar que el usuario tiene dinero suficiente
+    const userInfo = await db.query(
+      'SELECT dinero FROM users_liga WHERE id_user = $1 AND id_liga = $2',
+      [idUser, id_liga]
+    );
+    
+    if (Number(userInfo.rows[0].dinero) < monto) {
+      return res.status(400).json({ message: 'No tienes suficiente dinero para esta puja' });
+    }
+
+    // 4. Insertar o actualizar la puja (Si ya pujó, actualizamos su oferta)
+    await db.query(
+      'DELETE FROM pujas WHERE id_liga = $1 AND id_futbolista = $2 AND id_user = $3',
+      [id_liga, id_futbolista, idUser]
+    );
+
+    await db.query(
+      'INSERT INTO pujas (id_liga, id_futbolista, id_user, monto, fecha) VALUES ($1, $2, $3, $4, NOW())',
+      [id_liga, id_futbolista, idUser, monto]
+    );
+
+    res.json({ message: `Puja realizada por ${jugadorInfo.rows[0].nombre}` });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error al realizar la puja' });
   }
 });
 
