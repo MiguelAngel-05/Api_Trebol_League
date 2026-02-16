@@ -456,43 +456,40 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
     const idUser = req.user.id;
 
     const mercado = await db.query(`
+      -- PARTE 1: JUGADORES DE LA BANCA (MERCADO)
       SELECT 
         f.id_futbolista,
         f.nombre,
         f.posicion,
         f.equipo,
         f.media,
-        COALESCE(ful.precio_venta, f.precio) as precio,
-        ful.id_user as id_vendedor,
-        u.username as vendedor_name,
+        f.precio as precio,      -- Precio original
+        NULL::int as id_vendedor,      -- La banca no tiene ID de usuario
+        NULL::text as vendedor_name,   -- La banca no tiene nombre de usuario
         
-        -- CAMPO NUEVO: Devuelve true si hay una puja de este usuario
+        -- Comprobar si este usuario ya ha pujado
         CASE WHEN p.id_user IS NOT NULL THEN true ELSE false END as pujado_por_mi,
-        
-        -- Opcional: Saber cuánto pujaste
-        p.monto as mi_puja_actual
+        COALESCE(p.monto, 0) as mi_puja_actual
 
       FROM mercado_liga ml
       JOIN futbolistas f ON f.id_futbolista = ml.id_futbolista
-      -- Join para ver si hay pujas mías
+      -- Unimos con pujas SOLO para este usuario y esta liga
       LEFT JOIN pujas p ON p.id_futbolista = f.id_futbolista AND p.id_liga = $1 AND p.id_user = $2
-      -- Join para ventas de usuarios (para que no rompa lo otro)
-      LEFT JOIN futbolista_user_liga ful ON 1=0 
       WHERE ml.id_liga = $1
-      
+
       UNION
-      
-      -- Parte de jugadores en venta por usuarios
+
+      -- PARTE 2: JUGADORES QUE VENDEN OTROS USUARIOS
       SELECT 
         f.id_futbolista, 
         f.nombre, 
         f.posicion, 
         f.equipo, 
         f.media,
-        ful.precio_venta as precio,
+        ful.precio_venta as precio, -- Precio que puso el usuario
         ful.id_user as id_vendedor,
         u.username as vendedor_name,
-        false as pujado_por_mi, -- En compra directa no hay puja
+        false as pujado_por_mi,     -- En compra directa no hay sistema de pujas
         0 as mi_puja_actual
       FROM futbolista_user_liga ful
       JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
