@@ -329,35 +329,7 @@ router.post('/:id_liga/vender', verifyToken, async (req, res) => {
   }
 });
 
-// Comprar jugador directamente a otro usuario (Desde Mercado)
-mercadoRouter.post('/compra-directa', verifyToken, async (req, res) => {
-  const { id_liga, id_futbolista, id_vendedor, precio } = req.body;
-  const idComprador = req.user.id;
 
-  try {
-    // 1. Restar dinero al comprador y sumar al vendedor
-    await db.query('UPDATE users_liga SET dinero = dinero - $1 WHERE id_user = $2 AND id_liga = $3', [precio, idComprador, id_liga]);
-    await db.query('UPDATE users_liga SET dinero = dinero + $1 WHERE id_user = $2 AND id_liga = $3', [precio, id_vendedor, id_liga]);
-
-    // 2. Cambiar dueño del jugador
-    await db.query(
-      `UPDATE futbolista_user_liga SET id_user = $1, en_venta = false, precio_venta = 0 
-       WHERE id_user = $2 AND id_liga = $3 AND id_futbolista = $4`,
-      [idComprador, id_vendedor, id_liga, id_futbolista]
-    );
-
-    // 3. Registrar en historial
-    await db.query(
-      `INSERT INTO historial_transferencias (id_liga, id_futbolista, id_vendedor, id_comprador, monto, tipo)
-       VALUES ($1, $2, $3, $4, $5, 'compra_usuario')`,
-      [id_liga, id_futbolista, id_vendedor, idComprador, precio]
-    );
-
-    res.json({ message: 'Fichaje realizado con éxito' });
-  } catch (err) {
-    res.status(500).json({ message: 'Error en la transacción' });
-  }
-});
 
 app.use('/api/ligas', router);
 
@@ -481,18 +453,52 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
     }
 
     // Devolver mercado actual (con JOIN para escudos y media)
+    const idUser = req.user.id;
+
     const mercado = await db.query(`
       SELECT 
         f.id_futbolista,
         f.nombre,
         f.posicion,
-        f.precio,
         f.equipo,
-        f.media
+        f.media,
+        COALESCE(ful.precio_venta, f.precio) as precio,
+        ful.id_user as id_vendedor,
+        u.username as vendedor_name,
+        
+        -- CAMPO NUEVO: Devuelve true si hay una puja de este usuario
+        CASE WHEN p.id_user IS NOT NULL THEN true ELSE false END as pujado_por_mi,
+        
+        -- Opcional: Saber cuánto pujaste
+        p.monto as mi_puja_actual
+
       FROM mercado_liga ml
       JOIN futbolistas f ON f.id_futbolista = ml.id_futbolista
+      -- Join para ver si hay pujas mías
+      LEFT JOIN pujas p ON p.id_futbolista = f.id_futbolista AND p.id_liga = $1 AND p.id_user = $2
+      -- Join para ventas de usuarios (para que no rompa lo otro)
+      LEFT JOIN futbolista_user_liga ful ON 1=0 
       WHERE ml.id_liga = $1
-    `, [id_liga]);
+      
+      UNION
+      
+      -- Parte de jugadores en venta por usuarios
+      SELECT 
+        f.id_futbolista, 
+        f.nombre, 
+        f.posicion, 
+        f.equipo, 
+        f.media,
+        ful.precio_venta as precio,
+        ful.id_user as id_vendedor,
+        u.username as vendedor_name,
+        false as pujado_por_mi, -- En compra directa no hay puja
+        0 as mi_puja_actual
+      FROM futbolista_user_liga ful
+      JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
+      JOIN users u ON u.id = ful.id_user
+      WHERE ful.id_liga = $1 AND ful.en_venta = true
+    `, [id_liga, idUser]);
 
     // Calcular fecha para el contador
     const fechaGen = mercadoActual.rows.length 
@@ -563,6 +569,36 @@ mercadoRouter.post('/pujar', verifyToken, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Error al realizar la puja' });
+  }
+});
+
+// Comprar jugador directamente a otro usuario (Desde Mercado)
+mercadoRouter.post('/compra-directa', verifyToken, async (req, res) => {
+  const { id_liga, id_futbolista, id_vendedor, precio } = req.body;
+  const idComprador = req.user.id;
+
+  try {
+    // 1. Restar dinero al comprador y sumar al vendedor
+    await db.query('UPDATE users_liga SET dinero = dinero - $1 WHERE id_user = $2 AND id_liga = $3', [precio, idComprador, id_liga]);
+    await db.query('UPDATE users_liga SET dinero = dinero + $1 WHERE id_user = $2 AND id_liga = $3', [precio, id_vendedor, id_liga]);
+
+    // 2. Cambiar dueño del jugador
+    await db.query(
+      `UPDATE futbolista_user_liga SET id_user = $1, en_venta = false, precio_venta = 0 
+       WHERE id_user = $2 AND id_liga = $3 AND id_futbolista = $4`,
+      [idComprador, id_vendedor, id_liga, id_futbolista]
+    );
+
+    // 3. Registrar en historial
+    await db.query(
+      `INSERT INTO historial_transferencias (id_liga, id_futbolista, id_vendedor, id_comprador, monto, tipo)
+       VALUES ($1, $2, $3, $4, $5, 'compra_usuario')`,
+      [id_liga, id_futbolista, id_vendedor, idComprador, precio]
+    );
+
+    res.json({ message: 'Fichaje realizado con éxito' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error en la transacción' });
   }
 });
 
