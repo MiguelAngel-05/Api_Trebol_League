@@ -581,6 +581,23 @@ mercadoRouter.post('/pujar', verifyToken, async (req, res) => {
   }
 });
 
+// Retirar una puja
+mercadoRouter.delete('/pujar', verifyToken, async (req, res) => {
+  const { id_liga, id_futbolista } = req.body; 
+  const idUser = req.user.id;
+
+  try {
+    await db.query(
+      'DELETE FROM pujas WHERE id_liga = $1 AND id_futbolista = $2 AND id_user = $3',
+      [id_liga, id_futbolista, idUser]
+    );
+    res.json({ message: 'Puja retirada correctamente' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error al retirar la puja' });
+  }
+});
+
 // Comprar jugador directamente a otro usuario (Desde Mercado)
 mercadoRouter.post('/compra-directa', verifyToken, async (req, res) => {
   const { id_liga, id_futbolista, id_vendedor, precio } = req.body;
