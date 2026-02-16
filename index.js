@@ -227,6 +227,28 @@ router.put('/:id_liga/make-admin/:id_user', verifyToken, requireLeagueRole(['own
   }
 });
 
+// Obtener datos del usuario en una liga específica
+router.get('/:id_liga/datos-usuario', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const idUser = req.user.id;
+
+  try {
+    const result = await db.query(
+      'SELECT dinero, puntos, rol FROM users_liga WHERE id_user = $1 AND id_liga = $2',
+      [idUser, id_liga]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'Usuario no encontrado en esta liga' });
+    }
+
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error obteniendo datos del usuario en la liga' });
+  }
+});
+
 app.use('/api/ligas', router);
 
 // Ver ligas de un usuario
@@ -278,7 +300,7 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
         SELECT id_futbolista
         FROM futbolistas
         ORDER BY RANDOM()
-        LIMIT 10
+        LIMIT 20
       `);
 
       for (const j of nuevosJugadores.rows) {
