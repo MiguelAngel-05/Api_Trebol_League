@@ -31,7 +31,8 @@ async function initLeagueTables() {
         id_futbolista INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
         nombre VARCHAR(100) NOT NULL,
         posicion VARCHAR(50) NOT NULL,
-        dorsal INT,
+        equipo VARCHAR(100) NOT NULL,
+        media INT,
         precio INT NOT NULL DEFAULT 20000
       );
     `);
