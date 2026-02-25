@@ -134,7 +134,7 @@ router.post('/', verifyToken, async (req, res) => {
     // Añadir al creador en users_liga como owner
     await db.query(
       'INSERT INTO users_liga (id_user, id_liga, rol, dinero, puntos) VALUES ($1,$2,$3,$4,$5)',
-      [idUser, idLiga, 'owner', 10000000, 0]
+      [idUser, idLiga, 'owner', 100000000, 0]
     );
 
     // Actualizar el número de jugadores a 1
@@ -188,7 +188,7 @@ router.post('/:id_liga/join', verifyToken, async (req, res) => {
 
     // Insertar al usuario como user en la liga
     await db.query('INSERT INTO users_liga (id_user,id_liga,rol,dinero,puntos) VALUES ($1,$2,$3,$4,$5)',
-      [idUser, id_liga, 'user', 10000000, 0]
+      [idUser, id_liga, 'user', 100000000, 0]
     );
 
     // Aumentar el número de jugadores
@@ -268,12 +268,9 @@ router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
   try {
     const result = await db.query(`
       SELECT 
-        f.id_futbolista,
-        f.nombre,
-        f.posicion,
-        f.precio,
-        f.equipo,
-        f.media
+        f.id_futbolista, f.nombre, f.posicion, f.precio, f.equipo, f.media,
+        f.imagen, f.ataque, f.defensa, f.parada, f.pase,
+        ful.en_venta, ful.precio_venta
       FROM futbolista_user_liga ful
       JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
       WHERE ful.id_liga = $1 AND ful.id_user = $2
@@ -468,41 +465,29 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
     const idUser = req.user.id;
 
     const mercado = await db.query(`
-      -- PARTE 1: JUGADORES DE LA BANCA (MERCADO)
+      -- PARTE 1: JUGADORES DE LA BANCA
       SELECT 
-        f.id_futbolista,
-        f.nombre,
-        f.posicion,
-        f.equipo,
-        f.media,
-        f.precio as precio,      -- Precio original
-        NULL::int as id_vendedor,      -- La banca no tiene ID de usuario
-        NULL::text as vendedor_name,   -- La banca no tiene nombre de usuario
-        
-        -- Comprobar si este usuario ya ha pujado
+        f.id_futbolista, f.nombre, f.posicion, f.equipo, f.media, f.precio as precio, 
+        NULL::int as id_vendedor, NULL::text as vendedor_name,
         CASE WHEN p.id_user IS NOT NULL THEN true ELSE false END as pujado_por_mi,
-        COALESCE(p.monto, 0) as mi_puja_actual
+        COALESCE(p.monto, 0) as mi_puja_actual,
+        -- ¡AQUÍ ESTÁ LO NUEVO!
+        f.imagen, f.ataque, f.defensa, f.parada, f.pase
 
       FROM mercado_liga ml
       JOIN futbolistas f ON f.id_futbolista = ml.id_futbolista
-      -- Unimos con pujas SOLO para este usuario y esta liga
       LEFT JOIN pujas p ON p.id_futbolista = f.id_futbolista AND p.id_liga = $1 AND p.id_user = $2
       WHERE ml.id_liga = $1
 
       UNION
 
-      -- PARTE 2: JUGADORES QUE VENDEN OTROS USUARIOS
+      -- PARTE 2: JUGADORES DE OTROS USUARIOS
       SELECT 
-        f.id_futbolista, 
-        f.nombre, 
-        f.posicion, 
-        f.equipo, 
-        f.media,
-        ful.precio_venta as precio, -- Precio que puso el usuario
-        ful.id_user as id_vendedor,
-        u.username as vendedor_name,
-        false as pujado_por_mi,     -- En compra directa no hay sistema de pujas
-        0 as mi_puja_actual
+        f.id_futbolista, f.nombre, f.posicion, f.equipo, f.media, ful.precio_venta as precio, 
+        ful.id_user as id_vendedor, u.username as vendedor_name, false as pujado_por_mi, 0 as mi_puja_actual,
+        -- ¡AQUÍ TAMBIÉN LO NUEVO!
+        f.imagen, f.ataque, f.defensa, f.parada, f.pase
+
       FROM futbolista_user_liga ful
       JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
       JOIN users u ON u.id = ful.id_user

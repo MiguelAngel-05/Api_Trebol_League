@@ -19,7 +19,7 @@ async function initLeagueTables() {
       CREATE TABLE IF NOT EXISTS users_liga (
         id_user INT,
         id_liga INT,
-        dinero NUMERIC(10,2) DEFAULT 0,
+        dinero BIGINT DEFAULT 0,
         puntos INT DEFAULT 0,
         rol VARCHAR(20) NOT NULL DEFAULT 'user',
         PRIMARY KEY (id_user, id_liga),
@@ -60,7 +60,7 @@ async function initLeagueTables() {
         id_liga INT,
         id_futbolista INT,
         en_venta BOOLEAN DEFAULT FALSE,
-        precio_venta NUMERIC(15,2) DEFAULT 0,
+        precio_venta BIGINT DEFAULT 0,
         PRIMARY KEY (id_user, id_liga, id_futbolista),
         FOREIGN KEY (id_user, id_liga)
           REFERENCES users_liga(id_user, id_liga) ON DELETE CASCADE,
@@ -88,7 +88,7 @@ async function initLeagueTables() {
         id_liga INT,
         id_futbolista INT,
         id_user INT,
-        monto NUMERIC(15,2) NOT NULL,
+        monto BIGINT NOT NULL,
         fecha TIMESTAMP DEFAULT NOW(),
         FOREIGN KEY (id_liga) REFERENCES ligas(id_liga) ON DELETE CASCADE,
         FOREIGN KEY (id_futbolista) REFERENCES futbolistas(id_futbolista) ON DELETE CASCADE,
@@ -104,7 +104,7 @@ async function initLeagueTables() {
         id_futbolista INT,
         id_vendedor INT, -- Puede ser NULL si vende el sistema (Mercado)
         id_comprador INT, -- Puede ser NULL si vende al sistema (Venta rápida)
-        monto NUMERIC(15,2) NOT NULL,
+        monto BIGINT NOT NULL,
         fecha TIMESTAMP DEFAULT NOW(),
         tipo VARCHAR(20) CHECK (tipo IN ('compra_mercado', 'compra_usuario', 'venta_rapida')),
         FOREIGN KEY (id_liga) REFERENCES ligas(id_liga) ON DELETE CASCADE,
