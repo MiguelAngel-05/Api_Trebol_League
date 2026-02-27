@@ -523,7 +523,6 @@ mercadoRouter.post('/pujar', verifyToken, async (req, res) => {
   }
 
   try {
-    // 1. Verificar que el jugador está en el mercado de esa liga
     const checkMercado = await db.query(
       'SELECT * FROM mercado_liga WHERE id_liga = $1 AND id_futbolista = $2',
       [id_liga, id_futbolista]
@@ -532,7 +531,6 @@ mercadoRouter.post('/pujar', verifyToken, async (req, res) => {
       return res.status(404).json({ message: 'El jugador no está en el mercado' });
     }
 
-    // 2. Verificar precio base del jugador
     const jugadorInfo = await db.query('SELECT precio, nombre FROM futbolistas WHERE id_futbolista = $1', [id_futbolista]);
     const precioBase = Number(jugadorInfo.rows[0].precio);
 
@@ -540,7 +538,6 @@ mercadoRouter.post('/pujar', verifyToken, async (req, res) => {
       return res.status(400).json({ message: `La puja debe ser al menos el valor de mercado (${precioBase})` });
     }
 
-    // 3. Verificar que el usuario tiene dinero suficiente
     const userInfo = await db.query(
       'SELECT dinero FROM users_liga WHERE id_user = $1 AND id_liga = $2',
       [idUser, id_liga]
@@ -550,7 +547,6 @@ mercadoRouter.post('/pujar', verifyToken, async (req, res) => {
       return res.status(400).json({ message: 'No tienes suficiente dinero para esta puja' });
     }
 
-    // 4. Insertar o actualizar la puja (Si ya pujó, actualizamos su oferta)
     await db.query(
       'DELETE FROM pujas WHERE id_liga = $1 AND id_futbolista = $2 AND id_user = $3',
       [id_liga, id_futbolista, idUser]
@@ -592,18 +588,15 @@ mercadoRouter.post('/compra-directa', verifyToken, async (req, res) => {
   const idComprador = req.user.id;
 
   try {
-    // 1. Restar dinero al comprador y sumar al vendedor
     await db.query('UPDATE users_liga SET dinero = dinero - $1 WHERE id_user = $2 AND id_liga = $3', [precio, idComprador, id_liga]);
     await db.query('UPDATE users_liga SET dinero = dinero + $1 WHERE id_user = $2 AND id_liga = $3', [precio, id_vendedor, id_liga]);
 
-    // 2. Cambiar dueño del jugador
     await db.query(
       `UPDATE futbolista_user_liga SET id_user = $1, en_venta = false, precio_venta = 0 
        WHERE id_user = $2 AND id_liga = $3 AND id_futbolista = $4`,
       [idComprador, id_vendedor, id_liga, id_futbolista]
     );
 
-    // 3. Registrar en historial
     await db.query(
       `INSERT INTO historial_transferencias (id_liga, id_futbolista, id_vendedor, id_comprador, monto, tipo)
        VALUES ($1, $2, $3, $4, $5, 'compra_usuario')`,
