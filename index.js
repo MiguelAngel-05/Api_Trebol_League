@@ -76,9 +76,12 @@ app.post('/api/register', async (req, res) => {
 
   try {
     const hashedPassword = await bcrypt.hash(password, 10);
+
+    const avatar = "https://api.dicebear.com/9.x/adventurer-neutral/svg?seed=" + username;
+
     const result = await db.query(
-      "INSERT INTO users (username, email, password) VALUES ($1,$2,$3) RETURNING id",
-      [username, email, hashedPassword]
+      "INSERT INTO users (username, email, password, avatar) VALUES ($1,$2,$3,$4) RETURNING id",
+      [username, email, hashedPassword, avatar]
     );
     res.status(201).json({ message: "Usuario registrado", userId: result.rows[0].id });
   } catch (error) {
@@ -100,7 +103,7 @@ app.post('/api/login', async (req, res) => {
     const validPassword = await bcrypt.compare(password, user.password);
     if (!validPassword) return res.status(401).json({ message: 'Contraseña incorrecta' });
 
-    const token = jwt.sign({ id: user.id, username: user.username }, secretKey, { expiresIn: '1h' });
+    const token = jwt.sign({ id: user.id, username: user.username, avatar: user.avatar }, secretKey, { expiresIn: '1h' });
     res.json({ token });
   } catch (err) {
     console.error(err);
