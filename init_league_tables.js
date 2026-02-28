@@ -36,7 +36,12 @@ async function initLeagueTables() {
         posicion VARCHAR(50) NOT NULL,
         equipo VARCHAR(100) NOT NULL,
         media INT,
-        precio INT NOT NULL DEFAULT 20000
+        precio INT NOT NULL DEFAULT 20000,
+        imagen VARCHAR(255),
+        ataque INT DEFAULT 0,
+        defensa INT DEFAULT 0,
+        pase INT DEFAULT 0,
+        parada INT DEFAULT 0
       );
     `);
 
@@ -109,6 +114,25 @@ async function initLeagueTables() {
         tipo VARCHAR(20) CHECK (tipo IN ('compra_mercado', 'compra_usuario', 'venta_rapida')),
         FOREIGN KEY (id_liga) REFERENCES ligas(id_liga) ON DELETE CASCADE,
         FOREIGN KEY (id_futbolista) REFERENCES futbolistas(id_futbolista) ON DELETE CASCADE
+      );
+    `);
+
+    // 9. Tabla de Ofertas Privadas (Ofertas a los rivales)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS ofertas_privadas (
+          id_oferta INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+          id_liga INT NOT NULL,
+          id_futbolista INT NOT NULL,
+          id_comprador INT NOT NULL,  -- El que hace la oferta
+          id_vendedor INT NOT NULL,   -- El dueño actual del jugador
+          monto BIGINT NOT NULL,      -- El dinero que se ofrece
+          estado VARCHAR(20) DEFAULT 'pendiente', -- 'pendiente', 'aceptada', 'rechazada'
+          fecha_creacion TIMESTAMP DEFAULT NOW(),
+          
+          FOREIGN KEY (id_liga) REFERENCES ligas(id_liga) ON DELETE CASCADE,
+          FOREIGN KEY (id_futbolista) REFERENCES futbolistas(id_futbolista) ON DELETE CASCADE,
+          FOREIGN KEY (id_comprador) REFERENCES users(id) ON DELETE CASCADE,
+          FOREIGN KEY (id_vendedor) REFERENCES users(id) ON DELETE CASCADE
       );
     `);
 

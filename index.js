@@ -321,6 +321,36 @@ router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
   }
 });
 
+// Obtener los jugadores de un rival
+router.get('/:id_liga/jugadores-rival/:id_usuario_rival', verifyToken, async (req, res) => {
+  const { id_liga, id_usuario_rival } = req.params;
+
+  try {
+    const result = await db.query(`
+      SELECT 
+        f.id_futbolista, f.nombre, f.posicion, f.precio, f.equipo, f.media,
+        f.imagen, f.ataque, f.defensa, f.parada, f.pase,
+        ful.en_venta, ful.precio_venta
+      FROM futbolista_user_liga ful
+      JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
+      WHERE ful.id_liga = $1 AND ful.id_user = $2
+      ORDER BY 
+        CASE 
+          WHEN f.posicion = 'PT' THEN 1
+          WHEN f.posicion = 'DF' THEN 2
+          WHEN f.posicion = 'MC' THEN 3
+          WHEN f.posicion = 'DL' THEN 4
+          ELSE 5
+        END
+    `, [id_liga, id_usuario_rival]);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error obteniendo jugadores del rival' });
+  }
+});
+
 // Historial de compras y ventas de la liga
 router.get('/:id_liga/historial', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
