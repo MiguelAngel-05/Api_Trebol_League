@@ -321,11 +321,14 @@ router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
   }
 });
 
-// Obtener los jugadores de un rival
+// Obtener los jugadores y datos de un rival
 router.get('/:id_liga/jugadores-rival/:id_usuario_rival', verifyToken, async (req, res) => {
   const { id_liga, id_usuario_rival } = req.params;
 
   try {
+    const rivalRes = await db.query('SELECT username, avatar FROM users WHERE id = $1', [id_usuario_rival]);
+    const rivalInfo = rivalRes.rows[0];
+
     const result = await db.query(`
       SELECT 
         f.id_futbolista, f.nombre, f.posicion, f.precio, f.equipo, f.media,
@@ -344,7 +347,11 @@ router.get('/:id_liga/jugadores-rival/:id_usuario_rival', verifyToken, async (re
         END
     `, [id_liga, id_usuario_rival]);
 
-    res.json(result.rows);
+    res.json({
+      rival: rivalInfo,
+      jugadores: result.rows
+    });
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Error obteniendo jugadores del rival' });
