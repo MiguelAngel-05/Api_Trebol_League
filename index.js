@@ -270,11 +270,18 @@ router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
 
   try {
     const result = await db.query(`
-      SELECT u.id, u.username, u.avatar, ul.puntos, ul.dinero, ul.rol
+      SELECT 
+        u.id, 
+        u.username, 
+        u.avatar, 
+        ul.puntos, 
+        ul.rol,
+        (SELECT COUNT(*) FROM futbolista_user_liga ful 
+         WHERE ful.id_user = u.id AND ful.id_liga = $1) as total_jugadores
       FROM users_liga ul
       JOIN users u ON u.id = ul.id_user
       WHERE ul.id_liga = $1
-      ORDER BY ul.puntos DESC, ul.dinero DESC
+      ORDER BY ul.puntos DESC
     `, [id_liga]);
 
     res.json(result.rows);
