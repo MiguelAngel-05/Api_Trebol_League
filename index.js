@@ -114,6 +114,29 @@ app.post('/api/login', async (req, res) => {
 // Ruta protegida de prueba
 app.get('/api/protected', verifyToken, (req, res) => res.json({ message: 'Protected route', user: req.user }));
 
+// --- RUTAS DE PERFIL ---
+app.put('/api/perfil', verifyToken, async (req, res) => {
+  const { username, avatar } = req.body;
+  const userId = req.user.id;
+
+  if (!username || !avatar) return res.status(400).json({ message: 'Datos incompletos' });
+
+  try {
+    const checkUser = await db.query('SELECT id FROM users WHERE username = $1 AND id != $2', [username, userId]);
+    if (checkUser.rows.length > 0) {
+      return res.status(400).json({ message: 'Ese nombre de usuario ya está pillado' });
+    }
+
+    await db.query('UPDATE users SET username = $1, avatar = $2 WHERE id = $3', [username, avatar, userId]);
+
+    const newToken = jwt.sign({ id: userId, username: username, avatar: avatar }, secretKey, { expiresIn: '7d' });
+
+    res.json({ message: 'Perfil actualizado con éxito', token: newToken });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error al actualizar el perfil' });
+  }
+});
 
 // --- RUTAS DE LIGAS ---
 
