@@ -264,6 +264,26 @@ router.get('/:id_liga/datos-usuario', verifyToken, async (req, res) => {
   }
 });
 
+// Obtener clasificación de la liga
+router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+
+  try {
+    const result = await db.query(`
+      SELECT u.id, u.username, u.avatar, ul.puntos, ul.dinero, ul.rol
+      FROM users_liga ul
+      JOIN users u ON u.id = ul.id_user
+      WHERE ul.id_liga = $1
+      ORDER BY ul.puntos DESC, ul.dinero DESC
+    `, [id_liga]);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error obteniendo clasificación' });
+  }
+});
+
 router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const idUser = req.user.id;
