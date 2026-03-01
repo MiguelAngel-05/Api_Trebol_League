@@ -720,6 +720,72 @@ mercadoRouter.post('/compra-directa', verifyToken, async (req, res) => {
   }
 });
 
+
+// 1. Obtener los mensajes del Chat General de la Liga
+router.get('/:id_liga/chat', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  try {
+    const result = await db.query(`
+      SELECT 
+        c.id_mensaje, c.mensaje as texto, c.fecha, 
+        u.username as remitente, u.id as id_remitente
+      FROM chat_general c
+      JOIN users u ON c.id_user = u.id
+      WHERE c.id_liga = $1
+      ORDER BY c.fecha ASC
+      LIMIT 100
+    `, [id_liga]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error cargando el chat general' });
+  }
+});
+
+// 2. Enviar un mensaje al Chat General
+router.post('/:id_liga/chat', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const { texto } = req.body;
+  const id_user = req.user.id;
+
+  if (!texto || texto.trim() === '') {
+    return res.status(400).json({ message: 'El mensaje no puede estar vacío' });
+  }
+
+  try {
+    await db.query(
+      'INSERT INTO chat_general (id_liga, id_user, mensaje) VALUES ($1, $2, $3)',
+      [id_liga, id_user, texto]
+    );
+    res.json({ message: 'Mensaje enviado correctamente' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error al enviar el mensaje' });
+  }
+});
+
+// 3. Obtener la Bandeja de Entrada (Mensajes Privados)
+router.get('/:id_liga/privados', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const id_user = req.user.id; // Tú eres el destinatario
+
+  try {
+    const result = await db.query(`
+      SELECT 
+        m.id_privado, m.tipo, m.asunto, m.contenido, m.leido, m.fecha, 
+        u.username as remitente
+      FROM mensajes_privados m
+      JOIN users u ON m.id_remitente = u.id
+      WHERE m.id_liga = $1 AND m.id_destinatario = $2
+      ORDER BY m.fecha DESC
+    `, [id_liga, id_user]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error cargando el buzón privado' });
+  }
+});
+
 app.use('/api/mercado', mercadoRouter);
 
 // Export para Vercel
