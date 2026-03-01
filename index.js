@@ -887,6 +887,38 @@ router.post('/:id_liga/ofertas/aceptar', verifyToken, async (req, res) => {
   }
 });
 
+// 4. Marcar mensaje como leído al abrirlo
+router.put('/:id_liga/mensajes/:id_mensaje/leer', verifyToken, async (req, res) => {
+  try {
+    await db.query('UPDATE mensajes_privados SET leido = true WHERE id_privado = $1', [req.params.id_mensaje]);
+    res.json({ message: 'Leído' });
+  } catch (err) { res.status(500).json({ message: 'Error' }); }
+});
+
+// 5. Rechazar una oferta (o contraofertar si mandas texto)
+router.post('/:id_liga/ofertas/rechazar', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const { id_oferta, id_mensaje, motivo } = req.body;
+  const id_vendedor = req.user.id;
+
+  try {
+    // Marcamos la oferta como rechazada y el mensaje como leído
+    await db.query("UPDATE ofertas_privadas SET estado = 'rechazada' WHERE id_oferta = $1", [id_oferta]);
+    await db.query("UPDATE mensajes_privados SET leido = true, tipo = 'texto', contenido = contenido || '\n\n❌ OFERTA RECHAZADA' WHERE id_privado = $1", [id_mensaje]);
+    
+    // Le mandamos un mensaje automático al comprador diciéndole que le han dicho que NO
+    const offRes = await db.query("SELECT id_comprador FROM ofertas_privadas WHERE id_oferta = $1", [id_oferta]);
+    const id_comprador = offRes.rows[0].id_comprador;
+
+    await db.query(`
+      INSERT INTO mensajes_privados (id_liga, id_remitente, id_destinatario, tipo, asunto, contenido)
+      VALUES ($1, $2, $3, 'texto', 'Oferta Rechazada', $4)
+    `, [id_liga, id_vendedor, id_comprador, `He rechazado tu oferta. ${motivo ? 'Mi respuesta: ' + motivo : 'No me interesa.'}`]);
+
+    res.json({ message: 'Oferta rechazada correctamente.' });
+  } catch (err) { res.status(500).json({ message: 'Error al rechazar' }); }
+});
+
 
 app.use('/api/mercado', mercadoRouter);
 
