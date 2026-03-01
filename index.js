@@ -767,12 +767,12 @@ router.post('/:id_liga/chat', verifyToken, async (req, res) => {
 // 3. Obtener la Bandeja de Entrada (Mensajes Privados)
 router.get('/:id_liga/privados', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
-  const id_user = req.user.id; // Tú eres el destinatario
+  const id_user = req.user.id;
 
   try {
     const result = await db.query(`
       SELECT 
-        m.id_privado, m.tipo, m.asunto, m.contenido, m.leido, m.fecha, 
+        m.id_privado, m.tipo, m.asunto, m.contenido, m.leido, m.fecha, m.id_oferta, 
         u.username as remitente
       FROM mensajes_privados m
       JOIN users u ON m.id_remitente = u.id
