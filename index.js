@@ -853,13 +853,13 @@ router.post('/:id_liga/ofertas/aceptar', verifyToken, async (req, res) => {
     if (ofertaRes.rows.length === 0) throw new Error('La oferta ya no es válida o ha caducado.');
     const oferta = ofertaRes.rows[0];
 
-    // 2. Comprobar que el comprador tiene dinero
-    const compradorRes = await db.query('SELECT dinero FROM ligas_users WHERE id_liga = $1 AND id_user = $2', [id_liga, oferta.id_comprador]);
+    // 2. Comprobar que el comprador tiene dinero (¡Aquí usamos users_liga!)
+    const compradorRes = await db.query('SELECT dinero FROM users_liga WHERE id_liga = $1 AND id_user = $2', [id_liga, oferta.id_comprador]);
     if (compradorRes.rows[0].dinero < oferta.monto) throw new Error('El comprador ya no tiene dinero suficiente.');
 
-    // 3. Mover el dinero
-    await db.query('UPDATE ligas_users SET dinero = dinero - $1 WHERE id_liga = $2 AND id_user = $3', [oferta.monto, id_liga, oferta.id_comprador]);
-    await db.query('UPDATE ligas_users SET dinero = dinero + $1 WHERE id_liga = $2 AND id_user = $3', [oferta.monto, id_liga, id_vendedor]);
+    // 3. Mover el dinero (¡Y aquí también usamos users_liga!)
+    await db.query('UPDATE users_liga SET dinero = dinero - $1 WHERE id_liga = $2 AND id_user = $3', [oferta.monto, id_liga, oferta.id_comprador]);
+    await db.query('UPDATE users_liga SET dinero = dinero + $1 WHERE id_liga = $2 AND id_user = $3', [oferta.monto, id_liga, id_vendedor]);
 
     // 4. Traspasar al jugador
     await db.query(`
@@ -872,7 +872,7 @@ router.post('/:id_liga/ofertas/aceptar', verifyToken, async (req, res) => {
     await db.query("UPDATE ofertas_privadas SET estado = 'aceptada' WHERE id_oferta = $1", [id_oferta]);
     await db.query("UPDATE mensajes_privados SET leido = true, tipo = 'texto', contenido = contenido || '\n\n✅ OFERTA ACEPTADA' WHERE id_privado = $1", [id_mensaje]);
 
-    // (Opcional) Le mandamos un mensaje automático al comprador diciendo que es suyo
+    // 6. Le mandamos un mensaje automático al comprador diciendo que es suyo
     await db.query(`
       INSERT INTO mensajes_privados (id_liga, id_remitente, id_destinatario, tipo, asunto, contenido)
       VALUES ($1, $2, $3, 'texto', '¡Trato cerrado!', 'Tu oferta de ${oferta.monto} Tc ha sido aceptada. El jugador ya está en tu plantilla.')
@@ -881,8 +881,8 @@ router.post('/:id_liga/ofertas/aceptar', verifyToken, async (req, res) => {
     await db.query('COMMIT'); // Guardamos los cambios
     res.json({ message: '¡Trato cerrado! Dinero y jugador intercambiados.' });
   } catch (err) {
-    await db.query('ROLLBACK'); // Si algo falla, cancelamos todo para que nadie pierda su jugador o su dinero
-    console.error(err);
+    await db.query('ROLLBACK'); // Si algo falla, cancelamos todo para no perder datos
+    console.error("Error al aceptar oferta:", err);
     res.status(400).json({ message: err.message || 'Error al procesar la oferta.' });
   }
 });
