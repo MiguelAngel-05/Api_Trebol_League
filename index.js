@@ -428,6 +428,22 @@ router.post('/:id_liga/vender', verifyToken, async (req, res) => {
   }
 });
 
+// Cancelar la venta de un jugador
+router.post('/:id_liga/cancelar-venta', verifyToken, async (req, res) => {
+  const { id_futbolista } = req.body;
+  const { id_liga } = req.params;
+
+  try {
+    await db.query(
+      `UPDATE futbolista_user_liga SET en_venta = false, precio_venta = 0 
+       WHERE id_user = $1 AND id_liga = $2 AND id_futbolista = $3`,
+      [req.user.id, id_liga, id_futbolista]
+    );
+    res.json({ message: 'Venta cancelada' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al cancelar la venta' });
+  }
+});
 
 
 app.use('/api/ligas', router);
@@ -535,11 +551,19 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
 
     if (regenerar) {
       const nuevosJugadores = await db.query(`
-        SELECT id_futbolista FROM futbolistas 
-        WHERE id_futbolista NOT IN (
-          SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $1
+        WITH Disponibles AS (
+          SELECT id_futbolista, posicion,
+                 ROW_NUMBER() OVER(PARTITION BY posicion ORDER BY RANDOM()) as rn,
+                 RANDOM() as rnd
+          FROM futbolistas 
+          WHERE id_futbolista NOT IN (
+            SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $1
+          )
         )
-        ORDER BY RANDOM() 
+        SELECT id_futbolista FROM Disponibles 
+        ORDER BY 
+          CASE WHEN rn <= 3 THEN 0 ELSE 1 END, 
+          rnd
         LIMIT 20
       `, [id_liga]);
 
