@@ -786,6 +786,108 @@ router.get('/:id_liga/privados', verifyToken, async (req, res) => {
   }
 });
 
+// 1. Enviar un Mensaje Normal (Desde la Clasificación)
+router.post('/:id_liga/mensajes-texto', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const { id_destinatario, asunto, contenido } = req.body;
+  const id_remitente = req.user.id;
+
+  try {
+    await db.query(`
+      INSERT INTO mensajes_privados (id_liga, id_remitente, id_destinatario, tipo, asunto, contenido)
+      VALUES ($1, $2, $3, 'texto', $4, $5)
+    `, [id_liga, id_remitente, id_destinatario, asunto, contenido]);
+    
+    res.json({ message: 'Mensaje enviado correctamente' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error al enviar el mensaje' });
+  }
+});
+
+// 2. Enviar una Oferta por un Jugador (Desde Plantilla Rival)
+router.post('/:id_liga/ofertas', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const { id_destinatario, id_futbolista, monto } = req.body;
+  const id_comprador = req.user.id;
+
+  try {
+    // 1. Crear la oferta oficial en la tabla de negociaciones
+    const ofertaRes = await db.query(`
+      INSERT INTO ofertas_privadas (id_liga, id_futbolista, id_comprador, id_vendedor, monto)
+      VALUES ($1, $2, $3, $4, $5) RETURNING id_oferta
+    `, [id_liga, id_futbolista, id_comprador, id_destinatario, monto]);
+    const id_oferta = ofertaRes.rows[0].id_oferta;
+
+    // 2. Obtener el nombre del jugador para el asunto
+    const futRes = await db.query('SELECT nombre FROM futbolistas WHERE id_futbolista = $1', [id_futbolista]);
+    const nombreJugador = futRes.rows[0].nombre;
+
+    // 3. Crear el mensaje en el buzón con el formato de oferta
+    const asunto = `Oferta por ${nombreJugador}`;
+    const contenido = `Te ofrezco ${monto} Tc por tu jugador ${nombreJugador}. ¿Aceptas el trato?`;
+
+    await db.query(`
+      INSERT INTO mensajes_privados (id_liga, id_remitente, id_destinatario, tipo, asunto, contenido, id_oferta)
+      VALUES ($1, $2, $3, 'oferta', $4, $5, $6)
+    `, [id_liga, id_comprador, id_destinatario, asunto, contenido, id_oferta]);
+
+    res.json({ message: 'Oferta enviada. A ver qué responde.' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error al enviar la oferta' });
+  }
+});
+
+// 3. ACEPTAR LA OFERTA (Hace el intercambio de jugador y dinero automático)
+router.post('/:id_liga/ofertas/aceptar', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const { id_oferta, id_mensaje } = req.body;
+  const id_vendedor = req.user.id;
+
+  try {
+    await db.query('BEGIN'); // Iniciamos una transacción segura
+
+    // 1. Buscar la oferta y validarla
+    const ofertaRes = await db.query("SELECT * FROM ofertas_privadas WHERE id_oferta = $1 AND estado = 'pendiente'", [id_oferta]);
+    if (ofertaRes.rows.length === 0) throw new Error('La oferta ya no es válida o ha caducado.');
+    const oferta = ofertaRes.rows[0];
+
+    // 2. Comprobar que el comprador tiene dinero
+    const compradorRes = await db.query('SELECT dinero FROM ligas_users WHERE id_liga = $1 AND id_user = $2', [id_liga, oferta.id_comprador]);
+    if (compradorRes.rows[0].dinero < oferta.monto) throw new Error('El comprador ya no tiene dinero suficiente.');
+
+    // 3. Mover el dinero
+    await db.query('UPDATE ligas_users SET dinero = dinero - $1 WHERE id_liga = $2 AND id_user = $3', [oferta.monto, id_liga, oferta.id_comprador]);
+    await db.query('UPDATE ligas_users SET dinero = dinero + $1 WHERE id_liga = $2 AND id_user = $3', [oferta.monto, id_liga, id_vendedor]);
+
+    // 4. Traspasar al jugador
+    await db.query(`
+      UPDATE futbolista_user_liga 
+      SET id_user = $1, en_venta = false, precio_venta = 0 
+      WHERE id_futbolista = $2 AND id_liga = $3
+    `, [oferta.id_comprador, oferta.id_futbolista, id_liga]);
+
+    // 5. Marcar oferta como aceptada y mensaje como procesado
+    await db.query("UPDATE ofertas_privadas SET estado = 'aceptada' WHERE id_oferta = $1", [id_oferta]);
+    await db.query("UPDATE mensajes_privados SET leido = true, tipo = 'texto', contenido = contenido || '\n\n✅ OFERTA ACEPTADA' WHERE id_privado = $1", [id_mensaje]);
+
+    // (Opcional) Le mandamos un mensaje automático al comprador diciendo que es suyo
+    await db.query(`
+      INSERT INTO mensajes_privados (id_liga, id_remitente, id_destinatario, tipo, asunto, contenido)
+      VALUES ($1, $2, $3, 'texto', '¡Trato cerrado!', 'Tu oferta de ${oferta.monto} Tc ha sido aceptada. El jugador ya está en tu plantilla.')
+    `, [id_liga, id_vendedor, oferta.id_comprador]);
+
+    await db.query('COMMIT'); // Guardamos los cambios
+    res.json({ message: '¡Trato cerrado! Dinero y jugador intercambiados.' });
+  } catch (err) {
+    await db.query('ROLLBACK'); // Si algo falla, cancelamos todo para que nadie pierda su jugador o su dinero
+    console.error(err);
+    res.status(400).json({ message: err.message || 'Error al procesar la oferta.' });
+  }
+});
+
+
 app.use('/api/mercado', mercadoRouter);
 
 // Export para Vercel
