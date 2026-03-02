@@ -468,116 +468,15 @@ app.get('/api/mis-ligas', verifyToken, async (req, res) => {
 // --- RUTAS DE MERCADO  ---
 mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
+  const idUser = req.user.id;
 
   try {
-    // Comprobar si hay mercado y si sigue siendo válido
+    // Solo obtenemos la fecha para el frontend
     const mercadoActual = await db.query(`
       SELECT fecha_generacion FROM mercado_liga WHERE id_liga = $1 LIMIT 1
     `, [id_liga]);
 
-    let regenerar = false;
-
-    if (mercadoActual.rows.length === 0) {
-      regenerar = true;
-    } else {
-      const fecha = new Date(mercadoActual.rows[0].fecha_generacion);
-      const ahora = new Date();
-      const diffHoras = (ahora - fecha) / (1000 * 60 * 60);
-      if (diffHoras >= 24) regenerar = true;
-    }
-
-    if (regenerar && mercadoActual.rows.length > 0) {
-      console.log(`Regenerando mercado para liga ${id_liga}... Resolviendo pujas.`);
-
-      // 1. Obtener todos los jugadores que estaban en el mercado
-      const jugadoresEnMercado = await db.query(
-        'SELECT id_futbolista FROM mercado_liga WHERE id_liga = $1',
-        [id_liga]
-      );
-
-      for (const j of jugadoresEnMercado.rows) {
-        const idFutbolista = j.id_futbolista;
-
-        // 2. Buscar la puja MÁS ALTA para este jugador
-        const pujaGanadora = await db.query(`
-          SELECT * FROM pujas 
-          WHERE id_liga = $1 AND id_futbolista = $2 
-          ORDER BY monto DESC 
-          LIMIT 1
-        `, [id_liga, idFutbolista]);
-
-        if (pujaGanadora.rows.length > 0) {
-          const ganador = pujaGanadora.rows[0];
-          const idGanador = ganador.id_user;
-          const montoPujado = Number(ganador.monto);
-
-          // 3. Verificar (otra vez por seguridad) si el ganador tiene dinero
-          const saldoGanador = await db.query(
-            'SELECT dinero FROM users_liga WHERE id_user = $1 AND id_liga = $2',
-            [idGanador, id_liga]
-          );
-
-          if (saldoGanador.rows.length > 0 && Number(saldoGanador.rows[0].dinero) >= montoPujado) {
-            // A) Restar dinero al ganador
-            await db.query(
-              'UPDATE users_liga SET dinero = dinero - $1 WHERE id_user = $2 AND id_liga = $3',
-              [montoPujado, idGanador, id_liga]
-            );
-
-            // B) Dar jugador al ganador (Tabla futbolista_user_liga)
-            await db.query(
-              'INSERT INTO futbolista_user_liga (id_user, id_liga, id_futbolista) VALUES ($1, $2, $3)',
-              [idGanador, id_liga, idFutbolista]
-            );
-
-            // C) Guardar en Historial
-            await db.query(`
-              INSERT INTO historial_transferencias 
-              (id_liga, id_futbolista, id_vendedor, id_comprador, monto, fecha, tipo)
-              VALUES ($1, $2, NULL, $3, $4, NOW(), 'compra_mercado')
-            `, [id_liga, idFutbolista, idGanador, montoPujado]); // Vendedor NULL = Sistema
-
-            console.log(`Jugador ${idFutbolista} vendido a usuario ${idGanador} por ${montoPujado}`);
-          }
-        }
-      }
-
-      // 4. Limpiar las pujas de ayer (ya procesadas o perdidas)
-      await db.query('DELETE FROM pujas WHERE id_liga = $1', [id_liga]);
-      
-      // 5. Borrar mercado viejo
-      await db.query('DELETE FROM mercado_liga WHERE id_liga = $1', [id_liga]);
-    }
-
-    if (regenerar) {
-      const nuevosJugadores = await db.query(`
-        WITH Disponibles AS (
-          SELECT id_futbolista, posicion,
-                 ROW_NUMBER() OVER(PARTITION BY posicion ORDER BY RANDOM()) as rn,
-                 RANDOM() as rnd
-          FROM futbolistas 
-          WHERE id_futbolista NOT IN (
-            SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $1
-          )
-        )
-        SELECT id_futbolista FROM Disponibles 
-        ORDER BY 
-          CASE WHEN rn <= 3 THEN 0 ELSE 1 END, 
-          rnd
-        LIMIT 20
-      `, [id_liga]);
-
-      for (const j of nuevosJugadores.rows) {
-        await db.query(`
-          INSERT INTO mercado_liga (id_liga, id_futbolista, fecha_generacion)
-          VALUES ($1, $2, NOW())
-        `, [id_liga, j.id_futbolista]);
-      }
-    }
-
     // Devolver mercado actual (con JOIN para escudos y media)
-    const idUser = req.user.id;
-
     const mercado = await db.query(`
       -- PARTE 1: JUGADORES DE LA BANCA
       SELECT 
@@ -585,9 +484,7 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
         NULL::int as id_vendedor, NULL::text as vendedor_name,
         CASE WHEN p.id_user IS NOT NULL THEN true ELSE false END as pujado_por_mi,
         COALESCE(p.monto, 0) as mi_puja_actual,
-        -- ¡AQUÍ ESTÁ LO NUEVO!
         f.imagen, f.ataque, f.defensa, f.parada, f.pase
-
       FROM mercado_liga ml
       JOIN futbolistas f ON f.id_futbolista = ml.id_futbolista
       LEFT JOIN pujas p ON p.id_futbolista = f.id_futbolista AND p.id_liga = $1 AND p.id_user = $2
@@ -599,19 +496,14 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
       SELECT 
         f.id_futbolista, f.nombre, f.posicion, f.equipo, f.media, ful.precio_venta as precio, 
         ful.id_user as id_vendedor, u.username as vendedor_name, false as pujado_por_mi, 0 as mi_puja_actual,
-        -- ¡AQUÍ TAMBIÉN LO NUEVO!
         f.imagen, f.ataque, f.defensa, f.parada, f.pase
-
       FROM futbolista_user_liga ful
       JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
       JOIN users u ON u.id = ful.id_user
       WHERE ful.id_liga = $1 AND ful.en_venta = true
     `, [id_liga, idUser]);
 
-    // Calcular fecha para el contador
-    const fechaGen = mercadoActual.rows.length 
-      ? mercadoActual.rows[0].fecha_generacion 
-      : new Date();
+    const fechaGen = mercadoActual.rows.length ? mercadoActual.rows[0].fecha_generacion : new Date();
 
     res.json({
       jugadores: mercado.rows,
@@ -921,6 +813,96 @@ router.post('/:id_liga/ofertas/rechazar', verifyToken, async (req, res) => {
 
 
 app.use('/api/mercado', mercadoRouter);
+
+// CRON JOB: ACTUALIZACIÓN A LAS 00:00 
+app.get('/api/cron/medianoche', async (req, res) => {
+  
+  // Protección para que solo Vercel pueda ejecutar esto
+  const authHeader = req.headers.authorization;
+  if (authHeader !== 'Bearer CLAVE_SECRETA_TREBOL') {
+    return res.status(401).json({ error: 'No autorizado' });
+  }
+
+  try {
+    console.log("Iniciando actualización nocturna del mercado...");
+    await db.query('BEGIN'); // Iniciamos transacción segura
+
+    // 1. Buscamos todas las ligas activas
+    const ligasRes = await db.query('SELECT id_liga FROM ligas');
+    
+    for (const liga of ligasRes.rows) {
+      const id_liga = liga.id_liga;
+      console.log(`Resolviendo pujas para la liga ${id_liga}...`);
+
+      // 2. Obtener todos los jugadores del mercado ACTUAL de esta liga
+      const jugadoresEnMercado = await db.query('SELECT id_futbolista FROM mercado_liga WHERE id_liga = $1', [id_liga]);
+
+      // 3. Resolver quién se lleva a cada jugador
+      for (const j of jugadoresEnMercado.rows) {
+        const idFutbolista = j.id_futbolista;
+
+        // Buscar la puja MÁS ALTA
+        const pujaGanadora = await db.query(`
+          SELECT * FROM pujas WHERE id_liga = $1 AND id_futbolista = $2 ORDER BY monto DESC LIMIT 1
+        `, [id_liga, idFutbolista]);
+
+        if (pujaGanadora.rows.length > 0) {
+          const ganador = pujaGanadora.rows[0];
+          const idGanador = ganador.id_user;
+          const montoPujado = Number(ganador.monto);
+
+          // Verificar si el ganador sigue teniendo dinero
+          const saldoGanador = await db.query('SELECT dinero FROM users_liga WHERE id_user = $1 AND id_liga = $2', [idGanador, id_liga]);
+
+          if (saldoGanador.rows.length > 0 && Number(saldoGanador.rows[0].dinero) >= montoPujado) {
+            // A) Restar dinero
+            await db.query('UPDATE users_liga SET dinero = dinero - $1 WHERE id_user = $2 AND id_liga = $3', [montoPujado, idGanador, id_liga]);
+            // B) Dar jugador
+            await db.query('INSERT INTO futbolista_user_liga (id_user, id_liga, id_futbolista) VALUES ($1, $2, $3)', [idGanador, id_liga, idFutbolista]);
+            // C) Guardar en Historial
+            await db.query(`
+              INSERT INTO historial_transferencias (id_liga, id_futbolista, id_vendedor, id_comprador, monto, fecha, tipo)
+              VALUES ($1, $2, NULL, $3, $4, NOW(), 'compra_mercado')
+            `, [id_liga, idFutbolista, idGanador, montoPujado]);
+          }
+        }
+      }
+
+      // 4. Limpiar el mercado viejo y las pujas de ayer de ESTA liga
+      await db.query('DELETE FROM pujas WHERE id_liga = $1', [id_liga]);
+      await db.query('DELETE FROM mercado_liga WHERE id_liga = $1', [id_liga]);
+
+      // 5. Generar los 20 NUEVOS jugadores asegurando 3 de cada posición
+      const nuevosJugadores = await db.query(`
+        WITH Disponibles AS (
+          SELECT id_futbolista, TRIM(UPPER(posicion)) as pos_limpia,
+                 ROW_NUMBER() OVER(PARTITION BY TRIM(UPPER(posicion)) ORDER BY RANDOM()) as rn,
+                 RANDOM() as rnd
+          FROM futbolistas 
+          WHERE id_futbolista NOT IN (
+            SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $1
+          )
+        )
+        SELECT id_futbolista 
+        FROM Disponibles 
+        ORDER BY CASE WHEN rn <= 3 THEN 0 ELSE 1 END, rnd
+        LIMIT 20
+      `, [id_liga]);
+
+      for (const j of nuevosJugadores.rows) {
+        await db.query('INSERT INTO mercado_liga (id_liga, id_futbolista, fecha_generacion) VALUES ($1, $2, NOW())', [id_liga, j.id_futbolista]);
+      }
+    }
+
+    await db.query('COMMIT');
+    console.log("¡Mercado nocturno actualizado con éxito!");
+    res.json({ message: 'Mercado actualizado correctamente.' });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error("Error en CRON nocturno:", err);
+    res.status(500).json({ error: 'Fallo al actualizar el mercado' });
+  }
+});
 
 // Export para Vercel
 module.exports = app;
