@@ -612,6 +612,80 @@ mercadoRouter.post('/compra-directa', verifyToken, async (req, res) => {
   }
 });
 
+// Abrir sobre normal 
+router.post('/:id_liga/tienda/abrir-normal', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const id_user = req.user.id;
+  const precioSobre = 10000000; // 10 Millones
+
+  try {
+    await db.query('BEGIN'); // Empezamos transacción segura
+
+    // 1. Comprobamos si tiene dinero
+    const userRes = await db.query('SELECT dinero FROM users_liga WHERE id_liga = $1 AND id_user = $2', [id_liga, id_user]);
+    if (userRes.rows.length === 0 || Number(userRes.rows[0].dinero) < precioSobre) {
+      throw new Error('No tienes suficientes Tc para este sobre.');
+    }
+
+    // 2. Tiramos los dados de la probabilidad (0 a 100)
+    const tirada = Math.random() * 100;
+    let minMedia = 0;
+    let maxMedia = 99;
+
+    if (tirada < 60) { // 60% Bronce
+      minMedia = 60; maxMedia = 69;
+    } else if (tirada < 85) { // 25% Plata
+      minMedia = 70; maxMedia = 79;
+    } else if (tirada < 98) { // 13% Oro
+      minMedia = 80; maxMedia = 89;
+    } else { // 2% Diamante (¡Panelazo!)
+      minMedia = 90; maxMedia = 95;
+    }
+
+    // 3. Buscamos un jugador aleatorio en ese rango de media QUE ESTÉ LIBRE 
+    // ¡Añadido: Que no lo tenga nadie (futbolista_user_liga) NI esté en el mercado (mercado_liga)!
+    let jugadorRes = await db.query(`
+      SELECT * FROM futbolistas 
+      WHERE media >= $1 AND media <= $2 
+      AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $3)
+      AND id_futbolista NOT IN (SELECT id_futbolista FROM mercado_liga WHERE id_liga = $3)
+      ORDER BY RANDOM() LIMIT 1
+    `, [minMedia, maxMedia, id_liga]);
+
+    // 4. Sistema de seguridad: ¿Qué pasa si ya no quedan libres de esa categoría? 
+    if (jugadorRes.rows.length === 0) {
+      jugadorRes = await db.query(`
+        SELECT * FROM futbolistas 
+        WHERE id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $1)
+        AND id_futbolista NOT IN (SELECT id_futbolista FROM mercado_liga WHERE id_liga = $1)
+        ORDER BY RANDOM() LIMIT 1
+      `, [id_liga]);
+      
+      if (jugadorRes.rows.length === 0) {
+        throw new Error('¡Ya no quedan jugadores libres en esta liga!');
+      }
+    }
+
+    const jugadorTocado = jugadorRes.rows[0];
+
+    // 5. Cobramos el dinero
+    await db.query('UPDATE users_liga SET dinero = dinero - $1 WHERE id_liga = $2 AND id_user = $3', [precioSobre, id_liga, id_user]);
+
+    // 6. Le damos el jugador
+    await db.query('INSERT INTO futbolista_user_liga (id_user, id_liga, id_futbolista, en_venta, precio_venta) VALUES ($1, $2, $3, false, 0)', 
+      [id_user, id_liga, jugadorTocado.id_futbolista]);
+
+    await db.query('COMMIT'); // Guardamos los cambios
+    
+    // 7. Devolvemos el jugador para la animación
+    res.json({ mensaje: 'Sobre abierto con éxito', jugador: jugadorTocado });
+
+  } catch (err) {
+    await db.query('ROLLBACK'); // Si algo falla, cancelamos todo para que no pierda dinero
+    console.error("Error abriendo sobre:", err);
+    res.status(400).json({ message: err.message || 'Error al abrir el sobre.' });
+  }
+});
 
 // 1. Obtener los mensajes del Chat General de la Liga
 router.get('/:id_liga/chat', verifyToken, async (req, res) => {
