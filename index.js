@@ -328,7 +328,7 @@ router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
       SELECT 
         f.id_futbolista, f.nombre, f.posicion, f.precio, f.equipo, f.media,
         f.imagen, f.ataque, f.defensa, f.parada, f.pase,
-        ful.en_venta, ful.precio_venta
+        ful.en_venta, ful.precio_venta, ful.es_titular
       FROM futbolista_user_liga ful
       JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
       WHERE ful.id_liga = $1 AND ful.id_user = $2
@@ -346,6 +346,47 @@ router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Error obteniendo tus jugadores' });
+  }
+});
+
+// Guardar la alineación de un usuario en una liga
+router.put('/:id_liga/plantilla', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const idUser = req.user.id;
+  const { formacion, titulares } = req.body; 
+  // 'titulares' será un array con los IDs de los 11 jugadores: [321, 45, 89...]
+
+  try {
+    await db.query('BEGIN'); 
+
+    // 1. Actualizar la formación preferida del usuario en esta liga
+    if (formacion) {
+      await db.query(
+        'UPDATE users_liga SET formacion = $1 WHERE id_user = $2 AND id_liga = $3',
+        [formacion, idUser, id_liga]
+      );
+    }
+
+    // 2. Mandar a TODOS los jugadores de este usuario al banquillo (Reset)
+    await db.query(
+      'UPDATE futbolista_user_liga SET es_titular = false WHERE id_user = $1 AND id_liga = $2',
+      [idUser, id_liga]
+    );
+
+    // 3. Ascender a titulares a los jugadores que estén en el césped
+    if (titulares && titulares.length > 0) {
+      await db.query(
+        'UPDATE futbolista_user_liga SET es_titular = true WHERE id_user = $1 AND id_liga = $2 AND id_futbolista = ANY($3::int[])',
+        [idUser, id_liga, titulares]
+      );
+    }
+
+    await db.query('COMMIT');
+    res.json({ message: '¡Plantilla guardada con éxito!' });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error("Error guardando plantilla:", err);
+    res.status(500).json({ message: 'Error al guardar la alineación' });
   }
 });
 
