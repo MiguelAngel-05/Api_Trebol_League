@@ -144,10 +144,15 @@ const router = express.Router();
 
 // Crear una liga
 router.post('/', verifyToken, async (req, res) => {
-  const { nombre, clave, max_jugadores } = req.body;
+  let { nombre, clave, max_jugadores } = req.body;
   const idUser = req.user.id;
 
   if (!nombre || !clave || !max_jugadores) return res.status(400).json({ message: 'Todos los campos son obligatorios' });
+
+  // 🔥 NUEVA LEY TREBOL LEAGUE: Ninguna liga puede tener más de 10 mánagers 🔥
+  if (max_jugadores > 10) {
+    max_jugadores = 10; // Si alguien intenta poner 20, el sistema le obliga a 10.
+  }
 
   try {
     // Crear la liga en la tabla de ligas
@@ -160,10 +165,10 @@ router.post('/', verifyToken, async (req, res) => {
     // Añadir al creador en users_liga como owner
     await db.query(
       'INSERT INTO users_liga (id_user, id_liga, rol, dinero, puntos) VALUES ($1,$2,$3,$4,$5)',
-      [idUser, idLiga, 'owner', 100000000, 0]
+      [idUser, idLiga, 'owner', 100000000, 0] // 100 Millones iniciales
     );
 
-    // Actualizar el número de jugadores a 1
+    // Actualizar el número de jugadores a 1 (El creador)
     await db.query('UPDATE ligas SET numero_jugadores=1 WHERE id_liga=$1', [idLiga]);
 
     res.status(201).json({ message: 'Liga creada', id_liga: idLiga });
