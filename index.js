@@ -612,6 +612,8 @@ mercadoRouter.post('/compra-directa', verifyToken, async (req, res) => {
   }
 });
 
+
+// SOBRES
 // Abrir sobre normal 
 router.post('/:id_liga/tienda/abrir-normal', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
@@ -683,6 +685,83 @@ router.post('/:id_liga/tienda/abrir-normal', verifyToken, async (req, res) => {
   } catch (err) {
     await db.query('ROLLBACK'); // Si algo falla, cancelamos todo para que no pierda dinero
     console.error("Error abriendo sobre:", err);
+    res.status(400).json({ message: err.message || 'Error al abrir el sobre.' });
+  }
+});
+
+// Abrir sobre de posición
+router.post('/:id_liga/tienda/abrir-posicion', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const { posicion } = req.body; 
+  const id_user = req.user.id;
+  const precioSobre = 15000000;
+
+  if (!posicion) return res.status(400).json({ message: 'Posición no especificada.' });
+
+  try {
+    await db.query('BEGIN'); 
+
+    // 1. Comprobamos si tiene dinero
+    const userRes = await db.query('SELECT dinero FROM users_liga WHERE id_liga = $1 AND id_user = $2', [id_liga, id_user]);
+    if (userRes.rows.length === 0 || Number(userRes.rows[0].dinero) < precioSobre) {
+      throw new Error('No tienes suficientes Tc para este sobre.');
+    }
+
+    // 2. Tiramos los dados (Probabilidades MÁS DIFÍCILES que el normal)
+    const tirada = Math.random() * 100;
+    let minMedia = 0;
+    let maxMedia = 99;
+
+    if (tirada < 70) { // 70% Bronce
+      minMedia = 60; maxMedia = 69;
+    } else if (tirada < 90) { // 20% Plata
+      minMedia = 70; maxMedia = 79;
+    } else if (tirada < 99) { // 9% Oro
+      minMedia = 80; maxMedia = 89;
+    } else { // 1% Diamante (Milagro absoluto)
+      minMedia = 90; maxMedia = 95;
+    }
+
+    // 3. Buscamos el jugador FILTRANDO POR POSICIÓN
+    let jugadorRes = await db.query(`
+      SELECT * FROM futbolistas 
+      WHERE media >= $1 AND media <= $2 
+      AND TRIM(UPPER(posicion)) = $3
+      AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $4)
+      AND id_futbolista NOT IN (SELECT id_futbolista FROM mercado_liga WHERE id_liga = $4)
+      ORDER BY RANDOM() LIMIT 1
+    `, [minMedia, maxMedia, posicion, id_liga]);
+
+    // 4. Fallback de seguridad: Si no quedan de esa media, le damos cualquiera de ESA POSICIÓN
+    if (jugadorRes.rows.length === 0) {
+      jugadorRes = await db.query(`
+        SELECT * FROM futbolistas 
+        WHERE TRIM(UPPER(posicion)) = $1
+        AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $2)
+        AND id_futbolista NOT IN (SELECT id_futbolista FROM mercado_liga WHERE id_liga = $2)
+        ORDER BY RANDOM() LIMIT 1
+      `, [posicion, id_liga]);
+      
+      if (jugadorRes.rows.length === 0) {
+        throw new Error(`¡Ya no quedan jugadores libres en la posición ${posicion}!`);
+      }
+    }
+
+    const jugadorTocado = jugadorRes.rows[0];
+
+    // 5. Cobramos los 15 Millones
+    await db.query('UPDATE users_liga SET dinero = dinero - $1 WHERE id_liga = $2 AND id_user = $3', [precioSobre, id_liga, id_user]);
+
+    // 6. Damos el jugador
+    await db.query('INSERT INTO futbolista_user_liga (id_user, id_liga, id_futbolista, en_venta, precio_venta) VALUES ($1, $2, $3, false, 0)', 
+      [id_user, id_liga, jugadorTocado.id_futbolista]);
+
+    await db.query('COMMIT');
+    res.json({ mensaje: 'Sobre abierto con éxito', jugador: jugadorTocado });
+
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error("Error abriendo sobre de posición:", err);
     res.status(400).json({ message: err.message || 'Error al abrir el sobre.' });
   }
 });
@@ -941,6 +1020,40 @@ app.get('/api/cron/medianoche', async (req, res) => {
           }
         }
       }
+
+      // ==========================================
+      // EL SISTEMA COMPRA JUGADORES SIN VENDER (80% DEL VALOR BASE)
+      // ==========================================
+      console.log(`El sistema está revisando jugadores en venta de la liga ${id_liga}...`);
+      
+      const jugadoresEnVenta = await db.query(`
+        SELECT ful.id_user, ful.id_futbolista, f.precio
+        FROM futbolista_user_liga ful
+        JOIN futbolistas f ON ful.id_futbolista = f.id_futbolista
+        WHERE ful.id_liga = $1 AND ful.en_venta = true
+      `, [id_liga]);
+
+      for (const jv of jugadoresEnVenta.rows) {
+        const idVendedor = jv.id_user;
+        const idFutbolista = jv.id_futbolista;
+        // Calculamos el 80% del valor BASE del jugador (f.precio)
+        const valorVentaSistema = Math.floor(Number(jv.precio) * 0.8); 
+
+        // A) Ingresar el 80% del dinero al vendedor
+        await db.query('UPDATE users_liga SET dinero = dinero + $1 WHERE id_user = $2 AND id_liga = $3', 
+          [valorVentaSistema, idVendedor, id_liga]);
+
+        // B) Quitarle el jugador de su plantilla
+        await db.query('DELETE FROM futbolista_user_liga WHERE id_user = $1 AND id_liga = $2 AND id_futbolista = $3', 
+          [idVendedor, id_liga, idFutbolista]);
+
+        // C) Registrar la operación en el historial (Vendedor: User | Comprador: NULL/Sistema)
+        await db.query(`
+          INSERT INTO historial_transferencias (id_liga, id_futbolista, id_vendedor, id_comprador, monto, fecha, tipo)
+          VALUES ($1, $2, $3, NULL, $4, NOW(), 'venta_sistema')
+        `, [id_liga, idFutbolista, idVendedor, valorVentaSistema]);
+      }
+      // ==========================================
 
       // 4. Limpiar el mercado viejo y las pujas de ayer de ESTA liga
       await db.query('DELETE FROM pujas WHERE id_liga = $1', [id_liga]);
