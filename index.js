@@ -269,11 +269,10 @@ router.get('/:id_liga/datos-usuario', verifyToken, async (req, res) => {
         ul.dinero, 
         ul.puntos, 
         ul.rol,
-        -- Subconsulta: Suma de todas mis pujas activas en esta liga
+        ul.formacion,
         (SELECT COALESCE(SUM(monto), 0) FROM pujas 
          WHERE id_user = $1 AND id_liga = $2) as total_pujado,
          
-        -- Subconsulta: Suma de precios de mis jugadores en venta
         (SELECT COALESCE(SUM(precio_venta), 0) FROM futbolista_user_liga 
          WHERE id_user = $1 AND id_liga = $2 AND en_venta = true) as total_ventas_esperadas
 
@@ -293,32 +292,6 @@ router.get('/:id_liga/datos-usuario', verifyToken, async (req, res) => {
 });
 
 // Obtener clasificación de la liga
-router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
-  const { id_liga } = req.params;
-
-  try {
-    const result = await db.query(`
-      SELECT 
-        u.id, 
-        u.username, 
-        u.avatar, 
-        ul.puntos, 
-        ul.rol,
-        (SELECT COUNT(*) FROM futbolista_user_liga ful 
-         WHERE ful.id_user = u.id AND ful.id_liga = $1) as total_jugadores
-      FROM users_liga ul
-      JOIN users u ON u.id = ul.id_user
-      WHERE ul.id_liga = $1
-      ORDER BY ul.puntos DESC
-    `, [id_liga]);
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error obteniendo clasificación' });
-  }
-});
-
 router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const idUser = req.user.id;
@@ -328,7 +301,8 @@ router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
       SELECT 
         f.id_futbolista, f.nombre, f.posicion, f.precio, f.equipo, f.media,
         f.imagen, f.ataque, f.defensa, f.parada, f.pase,
-        ful.en_venta, ful.precio_venta, ful.es_titular
+        ful.en_venta, ful.precio_venta, ful.es_titular, 
+        ful.hueco_plantilla
       FROM futbolista_user_liga ful
       JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
       WHERE ful.id_liga = $1 AND ful.id_user = $2
@@ -354,7 +328,6 @@ router.put('/:id_liga/plantilla', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const idUser = req.user.id;
   const { formacion, titulares } = req.body; 
-  // 'titulares' será un array con los IDs de los 11 jugadores: [321, 45, 89...]
 
   try {
     await db.query('BEGIN'); 
@@ -367,18 +340,20 @@ router.put('/:id_liga/plantilla', verifyToken, async (req, res) => {
       );
     }
 
-    // 2. Mandar a TODOS los jugadores de este usuario al banquillo (Reset)
+    // 2. Mandar a TODOS los jugadores al banquillo y limpiar su hueco
     await db.query(
-      'UPDATE futbolista_user_liga SET es_titular = false WHERE id_user = $1 AND id_liga = $2',
+      'UPDATE futbolista_user_liga SET es_titular = false, hueco_plantilla = NULL WHERE id_user = $1 AND id_liga = $2',
       [idUser, id_liga]
     );
 
-    // 3. Ascender a titulares a los jugadores que estén en el césped
+    // 3. Ascender a titulares a los que estén en el césped en su hueco específico
     if (titulares && titulares.length > 0) {
-      await db.query(
-        'UPDATE futbolista_user_liga SET es_titular = true WHERE id_user = $1 AND id_liga = $2 AND id_futbolista = ANY($3::int[])',
-        [idUser, id_liga, titulares]
-      );
+      for (const tit of titulares) {
+        await db.query(
+          'UPDATE futbolista_user_liga SET es_titular = true, hueco_plantilla = $1 WHERE id_user = $2 AND id_liga = $3 AND id_futbolista = $4',
+          [tit.hueco, idUser, id_liga, tit.id]
+        );
+      }
     }
 
     await db.query('COMMIT');
