@@ -149,9 +149,8 @@ router.post('/', verifyToken, async (req, res) => {
 
   if (!nombre || !clave || !max_jugadores) return res.status(400).json({ message: 'Todos los campos son obligatorios' });
 
-  // 🔥 NUEVA LEY TREBOL LEAGUE: Ninguna liga puede tener más de 10 mánagers 🔥
   if (max_jugadores > 10) {
-    max_jugadores = 10; // Si alguien intenta poner 20, el sistema le obliga a 10.
+    max_jugadores = 10; 
   }
 
   try {
@@ -246,15 +245,47 @@ router.delete('/:id_liga', verifyToken, requireLeagueRole(['owner']), async (req
   }
 });
 
-// Ascender un usuario a admin (solo owner)
-router.put('/:id_liga/make-admin/:id_user', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
+// Alternar Rol de Admin (Hacer o Quitar Admin) - Solo Owner
+router.put('/:id_liga/toggle-admin/:id_user', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
   const { id_liga, id_user } = req.params;
   try {
-    await db.query('UPDATE users_liga SET rol=$1 WHERE id_user=$2 AND id_liga=$3', ['admin', id_user, id_liga]);
-    res.json({ message: 'Usuario ascendido a admin' });
+    const check = await db.query('SELECT rol FROM users_liga WHERE id_user=$1 AND id_liga=$2', [id_user, id_liga]);
+    if (check.rows.length === 0) return res.status(404).json({message: 'Usuario no encontrado'});
+    if (check.rows[0].rol === 'owner') return res.status(400).json({message: 'No puedes cambiar el rol del Creador'});
+    
+    // Si es admin lo bajamos a user, si es user lo subimos a admin
+    const nuevoRol = check.rows[0].rol === 'admin' ? 'user' : 'admin';
+    
+    await db.query('UPDATE users_liga SET rol=$1 WHERE id_user=$2 AND id_liga=$3', [nuevoRol, id_user, id_liga]);
+    res.json({ message: nuevoRol === 'admin' ? 'Ascendido a Admin ⭐' : 'Relegado a Usuario normal' });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ message: 'Error al ascender a admin' });
+    res.status(500).json({ message: 'Error al cambiar el rol' });
+  }
+});
+
+// Vaciar Bandeja de Entrada Privada (Para cualquier usuario)
+router.delete('/:id_liga/privados', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const id_user = req.user.id;
+  try {
+    await db.query('DELETE FROM mensajes_privados WHERE id_liga = $1 AND id_destinatario = $2', [id_liga, id_user]);
+    res.json({ message: 'Buzón vaciado con éxito' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error al vaciar el buzón' });
+  }
+});
+
+// Vaciar Chat General (Solo Owner o Admin)
+router.delete('/:id_liga/chat', verifyToken, requireLeagueRole(['owner', 'admin']), async (req, res) => {
+  const { id_liga } = req.params;
+  try {
+    await db.query('DELETE FROM chat_general WHERE id_liga = $1', [id_liga]);
+    res.json({ message: 'El chat de la liga ha sido borrado' });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error al borrar el chat' });
   }
 });
 
@@ -1073,6 +1104,25 @@ app.get('/api/cron/medianoche', async (req, res) => {
           INSERT INTO historial_transferencias (id_liga, id_futbolista, id_vendedor, id_comprador, monto, fecha, tipo)
           VALUES ($1, $2, $3, NULL, $4, NOW(), 'venta_sistema')
         `, [id_liga, idFutbolista, idVendedor, valorVentaSistema]);
+        // D) Mandar mensaje al buzón del usuario avisando de la venta al sistema
+        // Primero sacamos el nombre del jugador para que el mensaje quede guapo
+        const futData = await db.query('SELECT nombre FROM futbolistas WHERE id_futbolista = $1', [idFutbolista]);
+        const nombreJugadorVendido = futData.rows[0]?.nombre || 'un jugador';
+
+        // Buscamos al owner (Administrador) de la liga para que actúe como remitente del correo
+        const ownerRes = await db.query("SELECT id_user FROM users_liga WHERE id_liga = $1 AND rol = 'owner' LIMIT 1", [id_liga]);
+        const idPresidente = ownerRes.rows.length > 0 ? ownerRes.rows[0].id_user : idVendedor;
+
+        // Insertamos el correo en el centro de mensajes
+        await db.query(`
+          INSERT INTO mensajes_privados (id_liga, id_remitente, id_destinatario, tipo, asunto, contenido)
+          VALUES ($1, $2, $3, 'texto', '💸 Venta al Sistema', $4)
+        `, [
+          id_liga, 
+          idPresidente, 
+          idVendedor,
+          `El mercado ha cerrado y nadie ha pujado por él. El sistema ha comprado a tu jugador ${nombreJugadorVendido} por el 80% de su valor base (${valorVentaSistema} Tc). El dinero ya ha sido ingresado en tu cuenta.`
+        ]);
       }
       // ==========================================
 
