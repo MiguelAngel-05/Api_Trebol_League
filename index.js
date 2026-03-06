@@ -524,7 +524,7 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
   const { id_liga } = req.params;
 
   try {
-    await db.query('BEGIN'); 
+    await db.query('BEGIN'); // Transacción segura
 
     // 1. Comprobar si ya hay partidos generados
     const checkPartidos = await db.query('SELECT id_partido FROM partidos WHERE id_liga = $1 LIMIT 1', [id_liga]);
@@ -537,10 +537,9 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
     let equipos = teamsRes.rows.map(row => row.equipo);
 
     if (equipos.length < 2) {
-      throw new Error('No hay suficientes equipos en la base de datos para crear la liga.');
+      throw new Error('No hay suficientes equipos en la base de datos.');
     }
 
-    // Si por algún casual el número de equipos es impar, añadimos el fantasma
     if (equipos.length % 2 !== 0) {
       equipos.push('DESCANSA'); 
     }
@@ -550,26 +549,19 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
     const partidosPorJornada = totalEquipos / 2;
     let calendario = [];
 
-    // 3. ALGORITMO ROUND-ROBIN
+    // 3. ALGORITMO ROUND-ROBIN (Ida y Vuelta)
     let equiposRotatorios = [...equipos];
     const equipoFijo = equiposRotatorios.shift(); 
 
     // --- IDA ---
     for (let jornada = 1; jornada <= totalJornadasIda; jornada++) {
       const rivalDelFijo = equiposRotatorios[equiposRotatorios.length - 1];
-      
-      if (jornada % 2 === 0) {
-        calendario.push({ jornada: jornada, local: equipoFijo, visitante: rivalDelFijo });
-      } else {
-        calendario.push({ jornada: jornada, local: rivalDelFijo, visitante: equipoFijo });
-      }
+      if (jornada % 2 === 0) calendario.push({ jornada, local: equipoFijo, visitante: rivalDelFijo });
+      else calendario.push({ jornada, local: rivalDelFijo, visitante: equipoFijo });
 
       for (let i = 0; i < partidosPorJornada - 1; i++) {
-        const local = equiposRotatorios[i];
-        const visitante = equiposRotatorios[equiposRotatorios.length - 2 - i];
-        calendario.push({ jornada: jornada, local: local, visitante: visitante });
+        calendario.push({ jornada, local: equiposRotatorios[i], visitante: equiposRotatorios[equiposRotatorios.length - 2 - i] });
       }
-
       equiposRotatorios.unshift(equiposRotatorios.pop());
     }
 
@@ -577,31 +569,79 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
     for (let jornada = 1; jornada <= totalJornadasIda; jornada++) {
       const jornadaVuelta = jornada + totalJornadasIda;
       const partidosIda = calendario.filter(p => p.jornada === jornada);
-      
       for (const p of partidosIda) {
         calendario.push({ jornada: jornadaVuelta, local: p.visitante, visitante: p.local });
       }
     }
 
-    // 4. Asignar Fechas e Insertar en BD
-    // (Programamos 1 jornada al día a las 20:00 para que haya liga todos los días)
-    let fechaBase = new Date();
-    fechaBase.setHours(20, 0, 0, 0); 
+    // =======================================================
+    // 4. EL REPARTO TELEVISIVO (Fechas, Horas y Descansos)
+    // =======================================================
+    
+    // Empieza exactamente en 1 semana (7 días)
+    let currentDate = new Date();
+    currentDate.setDate(currentDate.getDate() + 7); 
+    currentDate.setHours(0, 0, 0, 0);
 
-    for (const partido of calendario) {
-      if (partido.local !== 'DESCANSA' && partido.visitante !== 'DESCANSA') {
-        const fechaPartido = new Date(fechaBase);
-        fechaPartido.setDate(fechaPartido.getDate() + partido.jornada); // Sumamos días según la jornada
+    const timeSlots = [
+      { h: 10, m: 0 }, // Mañana
+      { h: 13, m: 0 }, // Mediodía
+      { h: 17, m: 0 }, // Tarde
+      { h: 20, m: 0 }  // Noche
+    ];
 
-        await db.query(`
-          INSERT INTO partidos (id_liga, jornada, equipo_local, equipo_visitante, fecha_partido, estado)
-          VALUES ($1, $2, $3, $4, $5, 'pendiente')
-        `, [id_liga, partido.jornada, partido.local, partido.visitante, fechaPartido]);
+    // Función para barajar los horarios al azar
+    function shuffle(array) {
+      for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
       }
+      return array;
+    }
+
+    const totalJornadas = totalJornadasIda * 2;
+
+    for (let jornada = 1; jornada <= totalJornadas; jornada++) {
+      // Filtramos los partidos reales de esta jornada (ignoramos si alguien "Descansa")
+      let partidosJornada = calendario.filter(p => p.jornada === jornada && p.local !== 'DESCANSA' && p.visitante !== 'DESCANSA');
+      
+      // Reparto de los 10 partidos en 3 días: 3 el Día 1, 3 el Día 2, 4 el Día 3
+      const distribucion = [3, 3, 4];
+      let partidoIndex = 0;
+
+      for (let dayOffset = 0; dayOffset < 3; dayOffset++) {
+        const partidosHoy = distribucion[dayOffset];
+        
+        // Cogemos horarios al azar (si hoy hay 3 partidos, coge 3 horarios distintos)
+        const slotsHoy = shuffle([...timeSlots]).slice(0, partidosHoy);
+        
+        for (let i = 0; i < partidosHoy; i++) {
+          if (partidoIndex < partidosJornada.length) {
+            const partido = partidosJornada[partidoIndex];
+            
+            // Asignamos el día (+0, +1 o +2 días desde el inicio de la jornada) y la hora
+            const fechaPartido = new Date(currentDate);
+            fechaPartido.setDate(fechaPartido.getDate() + dayOffset);
+            fechaPartido.setHours(slotsHoy[i].h, slotsHoy[i].m, 0, 0);
+
+            await db.query(`
+              INSERT INTO partidos (id_liga, jornada, equipo_local, equipo_visitante, fecha_partido, estado)
+              VALUES ($1, $2, $3, $4, $5, 'pendiente')
+            `, [id_liga, partido.jornada, partido.local, partido.visitante, fechaPartido]);
+
+            partidoIndex++;
+          }
+        }
+      }
+
+      // Después del 3º día de la jornada, añadimos entre 1 y 4 días de DESCANSO
+      // El +2 es porque dayOffset llegó hasta 2 (es decir, el tercer día)
+      const diasDescanso = Math.floor(Math.random() * 4) + 1; // Random entre 1 y 4
+      currentDate.setDate(currentDate.getDate() + 2 + diasDescanso); 
     }
 
     await db.query('COMMIT');
-    res.json({ message: '¡Calendario de Clubes generado con éxito! 38 Jornadas listas.' });
+    res.json({ message: '¡Calendario generado! Pretemporada de 7 días iniciada. 📅⚽' });
 
   } catch (err) {
     await db.query('ROLLBACK');
