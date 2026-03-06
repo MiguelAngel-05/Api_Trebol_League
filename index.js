@@ -634,10 +634,10 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
         }
       }
 
-      // Después del 3º día de la jornada, añadimos entre 1 y 4 días de DESCANSO
-      // El +2 es porque dayOffset llegó hasta 2 (es decir, el tercer día)
-      const diasDescanso = Math.floor(Math.random() * 4) + 1; // Random entre 1 y 4
-      currentDate.setDate(currentDate.getDate() + 2 + diasDescanso); 
+      // Los partidos se han jugado en el Día 1, Día 2 y Día 3.
+      // Añadimos exactamente 2 días de descanso (Día 4 y Día 5 sin fútbol).
+      // Por tanto, la siguiente jornada empezará exactamente 5 días después.
+      currentDate.setDate(currentDate.getDate() + 5); 
     }
 
     await db.query('COMMIT');
