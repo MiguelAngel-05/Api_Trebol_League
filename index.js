@@ -323,6 +323,26 @@ router.get('/:id_liga/datos-usuario', verifyToken, async (req, res) => {
 });
 
 // Obtener clasificación de la liga
+router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  try {
+    const result = await db.query(`
+      SELECT 
+        u.id, u.username, u.avatar, ul.puntos, ul.rol,
+        (SELECT COUNT(*) FROM futbolista_user_liga ful WHERE ful.id_user = u.id AND ful.id_liga = $1) as total_jugadores
+      FROM users_liga ul
+      JOIN users u ON ul.id_user = u.id
+      WHERE ul.id_liga = $1
+      ORDER BY ul.puntos DESC, u.username ASC
+    `, [id_liga]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error cargando clasificación' });
+  }
+});
+
+// Obtener mis jugadores de la liga
 router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const idUser = req.user.id;
