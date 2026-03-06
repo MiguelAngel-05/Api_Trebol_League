@@ -45,20 +45,7 @@ async function initLeagueTables() {
       );
     `);
 
-    // 4. Tabla de Puntuaciones por Jornada
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS puntuacion (
-        id_futbolista INT,
-        jornada INT,
-        puntos INT,
-        PRIMARY KEY (id_futbolista, jornada),
-        FOREIGN KEY (id_futbolista)
-          REFERENCES futbolistas(id_futbolista) ON DELETE CASCADE
-      );
-    `);
-
     // 5. Relación Futbolista - Usuario - Liga (PLANTILLA)
-    // AQUI ESTAN LOS CAMBIOS: Añadidas columnas en_venta y precio_venta
     await db.query(`
       CREATE TABLE IF NOT EXISTS futbolista_user_liga (
         id_user INT,
@@ -133,6 +120,68 @@ async function initLeagueTables() {
           FOREIGN KEY (id_futbolista) REFERENCES futbolistas(id_futbolista) ON DELETE CASCADE,
           FOREIGN KEY (id_comprador) REFERENCES users(id) ON DELETE CASCADE,
           FOREIGN KEY (id_vendedor) REFERENCES users(id) ON DELETE CASCADE
+      );
+    `);
+
+      // 10. Tabla de Partidos (El Calendario)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS partidos (
+        id_partido INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        id_liga INT NOT NULL,
+        jornada INT NOT NULL,
+        id_local INT NOT NULL,      -- ID del usuario local (El equipo de casa)
+        id_visitante INT NOT NULL,  -- ID del usuario visitante
+        goles_local INT DEFAULT 0,
+        goles_visitante INT DEFAULT 0,
+        fecha_partido TIMESTAMP,    -- Cuándo se debe jugar
+        estado VARCHAR(20) DEFAULT 'pendiente', -- 'pendiente', 'simulando', 'finalizado'
+        
+        FOREIGN KEY (id_liga) REFERENCES ligas(id_liga) ON DELETE CASCADE,
+        FOREIGN KEY (id_local) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (id_visitante) REFERENCES users(id) ON DELETE CASCADE
+      );
+    `);
+
+    // 11. Tabla de Eventos (El "Minuto a Minuto" de los 60 mins)
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS eventos_partido (
+        id_evento INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        id_partido INT NOT NULL,
+        minuto INT NOT NULL,      -- Del 1 al 60
+        tipo_evento VARCHAR(50) NOT NULL, -- 'gol', 'gol_penalti', 'gol_propia', 'amarilla', 'roja', 'parada_penalti', 'ocasion_fallada'
+        id_futbolista INT,        -- El protagonista (quien tira, quien hace falta...)
+        id_asistente INT,         -- Si fue gol y hubo pase
+        descripcion TEXT NOT NULL, -- Ej: "¡Zurdazo a la escuadra!"
+        
+        FOREIGN KEY (id_partido) REFERENCES partidos(id_partido) ON DELETE CASCADE,
+        FOREIGN KEY (id_futbolista) REFERENCES futbolistas(id_futbolista) ON DELETE SET NULL,
+        FOREIGN KEY (id_asistente) REFERENCES futbolistas(id_futbolista) ON DELETE SET NULL
+      );
+    `);
+
+    // 12. Rendimiento del Jugador
+    // Aquí guardamos el desglose exacto de por qué ha sumado o restado puntos
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS rendimiento_partido (
+        id_rendimiento INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+        id_partido INT NOT NULL,
+        id_futbolista INT NOT NULL,
+        id_user INT NOT NULL,     -- El mánager que lo alineó ese día
+        
+        nota_base DECIMAL(3,1) DEFAULT 6.0, -- La nota del 0 al 10 por sus stats
+        puntos_totales INT DEFAULT 0,       -- Los puntos Fantasy finales
+        
+        goles INT DEFAULT 0,
+        asistencias INT DEFAULT 0,
+        amarillas INT DEFAULT 0,
+        rojas INT DEFAULT 0,
+        goles_propia INT DEFAULT 0,
+        mvp BOOLEAN DEFAULT FALSE,
+        porteria_cero BOOLEAN DEFAULT FALSE,
+        
+        FOREIGN KEY (id_partido) REFERENCES partidos(id_partido) ON DELETE CASCADE,
+        FOREIGN KEY (id_futbolista) REFERENCES futbolistas(id_futbolista) ON DELETE CASCADE,
+        FOREIGN KEY (id_user) REFERENCES users(id) ON DELETE CASCADE
       );
     `);
 

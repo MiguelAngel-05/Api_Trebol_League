@@ -518,6 +518,132 @@ router.post('/:id_liga/cancelar-venta', verifyToken, async (req, res) => {
 });
 
 
+//CALENDARIO
+// Generar el calendario de la liga
+router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
+  const { id_liga } = req.params;
+
+  try {
+    await db.query('BEGIN');
+
+    // 1. Comprobar si ya hay partidos (Para no sobreescribir una liga en curso)
+    const checkPartidos = await db.query('SELECT id_partido FROM partidos WHERE id_liga = $1 LIMIT 1', [id_liga]);
+    if (checkPartidos.rows.length > 0) {
+      throw new Error('La liga ya tiene un calendario generado.');
+    }
+
+    // 2. Obtener todos los usuarios de la liga
+    const usersRes = await db.query('SELECT id_user FROM users_liga WHERE id_liga = $1', [id_liga]);
+    let equipos = usersRes.rows.map(row => row.id_user);
+
+    // 3. Validar mínimo de jugadores
+    if (equipos.length < 2) {
+      throw new Error('Se necesitan al menos 2 mánagers para empezar la liga.');
+    }
+
+    // 4. Si el número de equipos es impar, añadimos un equipo "Fantasma" (Descansa)
+    // En nuestro caso, si te toca contra el ID -1, significa que esa jornada descansas.
+    let tieneFantasma = false;
+    if (equipos.length % 2 !== 0) {
+      equipos.push(-1); 
+      tieneFantasma = true;
+    }
+
+    const totalEquipos = equipos.length;
+    const totalJornadas = totalEquipos - 1;
+    const partidosPorJornada = totalEquipos / 2;
+    let calendario = [];
+
+    // 5.Emparejamientos
+    let equiposRotatorios = [...equipos];
+    const equipoFijo = equiposRotatorios.shift(); 
+
+    // Bucle para crear la IDA
+    for (let jornada = 1; jornada <= totalJornadas; jornada++) {
+      
+      // Emparejar al fijo con el último del array rotatorio
+      const rivalDelFijo = equiposRotatorios[equiposRotatorios.length - 1];
+      
+      // Alternar jugar en casa o fuera para el fijo
+      if (jornada % 2 === 0) {
+        calendario.push({ jornada: jornada, local: equipoFijo, visitante: rivalDelFijo });
+      } else {
+        calendario.push({ jornada: jornada, local: rivalDelFijo, visitante: equipoFijo });
+      }
+
+      // Emparejar a los demás equipos (El primero con el penúltimo, etc.)
+      for (let i = 0; i < partidosPorJornada - 1; i++) {
+        const local = equiposRotatorios[i];
+        const visitante = equiposRotatorios[equiposRotatorios.length - 2 - i];
+        calendario.push({ jornada: jornada, local: local, visitante: visitante });
+      }
+
+      // Rotar el array: El último pasa a ser el primero
+      equiposRotatorios.unshift(equiposRotatorios.pop());
+    }
+
+    // Bucle para crear la VUELTA (Mismos partidos pero invirtiendo Local/Visitante)
+    for (let jornada = 1; jornada <= totalJornadas; jornada++) {
+      const jornadaVuelta = jornada + totalJornadas;
+      const partidosIda = calendario.filter(p => p.jornada === jornada);
+      
+      for (const p of partidosIda) {
+        calendario.push({ jornada: jornadaVuelta, local: p.visitante, visitante: p.local });
+      }
+    }
+
+    // 6. Insertar los partidos en la Base de Datos (Omitiendo los partidos contra el "Fantasma")
+    // Además, calculamos fechas. Imaginemos que cada jornada es 1 día distinto.
+    let fechaBase = new Date();
+    fechaBase.setHours(20, 0, 0, 0); 
+
+    for (const partido of calendario) {
+      // Si ninguno de los dos es el fantasma (-1)
+      if (partido.local !== -1 && partido.visitante !== -1) {
+        
+        // Sumamos tantos días a hoy como el número de jornada
+        const fechaPartido = new Date(fechaBase);
+        fechaPartido.setDate(fechaPartido.getDate() + partido.jornada);
+
+        await db.query(`
+          INSERT INTO partidos (id_liga, jornada, id_local, id_visitante, fecha_partido, estado)
+          VALUES ($1, $2, $3, $4, $5, 'pendiente')
+        `, [id_liga, partido.jornada, partido.local, partido.visitante, fechaPartido]);
+      }
+    }
+
+    await db.query('COMMIT');
+    res.json({ message: '¡Calendario generado! Que empiece la Trebol League. 🍀⚽' });
+
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error("Error generando calendario:", err);
+    res.status(400).json({ message: err.message || 'Error al generar el calendario' });
+  }
+});
+
+// Obtener el calendario completo de la liga
+router.get('/:id_liga/calendario', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  try {
+    const result = await db.query(`
+      SELECT 
+        p.id_partido, p.jornada, p.goles_local, p.goles_visitante, p.fecha_partido, p.estado,
+        u1.username as local_name, 
+        u2.username as visitante_name
+      FROM partidos p
+      JOIN users u1 ON p.id_local = u1.id
+      JOIN users u2 ON p.id_visitante = u2.id
+      WHERE p.id_liga = $1
+      ORDER BY p.fecha_partido ASC
+    `, [id_liga]);
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: 'Error cargando el calendario' });
+  }
+});
+
 app.use('/api/ligas', router);
 
 // Ver ligas de un usuario
@@ -838,7 +964,9 @@ router.post('/:id_liga/tienda/abrir-posicion', verifyToken, async (req, res) => 
   }
 });
 
-// 1. Obtener los mensajes del Chat General de la Liga
+
+//CENTRO-DE-MENSAJES
+// Obtener los mensajes del Chat General de la Liga
 router.get('/:id_liga/chat', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   try {
@@ -859,7 +987,7 @@ router.get('/:id_liga/chat', verifyToken, async (req, res) => {
   }
 });
 
-// 2. Enviar un mensaje al Chat General
+// Enviar un mensaje al Chat General
 router.post('/:id_liga/chat', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const { texto } = req.body;
@@ -881,7 +1009,7 @@ router.post('/:id_liga/chat', verifyToken, async (req, res) => {
   }
 });
 
-// 3. Obtener la Bandeja de Entrada (Mensajes Privados)
+// Obtener la Bandeja de Entrada (Mensajes Privados)
 router.get('/:id_liga/privados', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const id_user = req.user.id;
@@ -903,7 +1031,7 @@ router.get('/:id_liga/privados', verifyToken, async (req, res) => {
   }
 });
 
-// 1. Enviar un Mensaje Normal (Desde la Clasificación)
+// Enviar un Mensaje Normal (Desde la Clasificación)
 router.post('/:id_liga/mensajes-texto', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const { id_destinatario, asunto, contenido } = req.body;
@@ -922,7 +1050,7 @@ router.post('/:id_liga/mensajes-texto', verifyToken, async (req, res) => {
   }
 });
 
-// 2. Enviar una Oferta por un Jugador (Desde Plantilla Rival)
+// Enviar una Oferta por un Jugador (Desde Plantilla Rival)
 router.post('/:id_liga/ofertas', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const { id_destinatario, id_futbolista, monto } = req.body;
@@ -956,7 +1084,7 @@ router.post('/:id_liga/ofertas', verifyToken, async (req, res) => {
   }
 });
 
-// 3. ACEPTAR LA OFERTA (Hace el intercambio de jugador y dinero automático)
+// ACEPTAR LA OFERTA (Hace el intercambio de jugador y dinero automático)
 router.post('/:id_liga/ofertas/aceptar', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const { id_oferta, id_mensaje } = req.body;
@@ -1004,7 +1132,7 @@ router.post('/:id_liga/ofertas/aceptar', verifyToken, async (req, res) => {
   }
 });
 
-// 4. Marcar mensaje como leído al abrirlo
+// Marcar mensaje como leído al abrirlo
 router.put('/:id_liga/mensajes/:id_mensaje/leer', verifyToken, async (req, res) => {
   try {
     await db.query('UPDATE mensajes_privados SET leido = true WHERE id_privado = $1', [req.params.id_mensaje]);
@@ -1012,7 +1140,7 @@ router.put('/:id_liga/mensajes/:id_mensaje/leer', verifyToken, async (req, res) 
   } catch (err) { res.status(500).json({ message: 'Error' }); }
 });
 
-// 5. Rechazar una oferta (o contraofertar si mandas texto)
+// Rechazar una oferta (o contraofertar si mandas texto)
 router.post('/:id_liga/ofertas/rechazar', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const { id_oferta, id_mensaje, motivo } = req.body;
