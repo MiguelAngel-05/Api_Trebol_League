@@ -524,67 +524,58 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
   const { id_liga } = req.params;
 
   try {
-    await db.query('BEGIN');
+    await db.query('BEGIN'); 
 
-    // 1. Comprobar si ya hay partidos (Para no sobreescribir una liga en curso)
+    // 1. Comprobar si ya hay partidos generados
     const checkPartidos = await db.query('SELECT id_partido FROM partidos WHERE id_liga = $1 LIMIT 1', [id_liga]);
     if (checkPartidos.rows.length > 0) {
       throw new Error('La liga ya tiene un calendario generado.');
     }
 
-    // 2. Obtener todos los usuarios de la liga
-    const usersRes = await db.query('SELECT id_user FROM users_liga WHERE id_liga = $1', [id_liga]);
-    let equipos = usersRes.rows.map(row => row.id_user);
+    // 2. Extraer TODOS los equipos únicos EXCEPTO el 'Real Trébol FC'
+    const teamsRes = await db.query("SELECT DISTINCT equipo FROM futbolistas WHERE equipo != 'Real Trébol FC'");
+    let equipos = teamsRes.rows.map(row => row.equipo);
 
-    // 3. Validar mínimo de jugadores
     if (equipos.length < 2) {
-      throw new Error('Se necesitan al menos 2 mánagers para empezar la liga.');
+      throw new Error('No hay suficientes equipos en la base de datos para crear la liga.');
     }
 
-    // 4. Si el número de equipos es impar, añadimos un equipo "Fantasma" (Descansa)
-    // En nuestro caso, si te toca contra el ID -1, significa que esa jornada descansas.
-    let tieneFantasma = false;
+    // Si por algún casual el número de equipos es impar, añadimos el fantasma
     if (equipos.length % 2 !== 0) {
-      equipos.push(-1); 
-      tieneFantasma = true;
+      equipos.push('DESCANSA'); 
     }
 
     const totalEquipos = equipos.length;
-    const totalJornadas = totalEquipos - 1;
+    const totalJornadasIda = totalEquipos - 1;
     const partidosPorJornada = totalEquipos / 2;
     let calendario = [];
 
-    // 5.Emparejamientos
+    // 3. ALGORITMO ROUND-ROBIN
     let equiposRotatorios = [...equipos];
     const equipoFijo = equiposRotatorios.shift(); 
 
-    // Bucle para crear la IDA
-    for (let jornada = 1; jornada <= totalJornadas; jornada++) {
-      
-      // Emparejar al fijo con el último del array rotatorio
+    // --- IDA ---
+    for (let jornada = 1; jornada <= totalJornadasIda; jornada++) {
       const rivalDelFijo = equiposRotatorios[equiposRotatorios.length - 1];
       
-      // Alternar jugar en casa o fuera para el fijo
       if (jornada % 2 === 0) {
         calendario.push({ jornada: jornada, local: equipoFijo, visitante: rivalDelFijo });
       } else {
         calendario.push({ jornada: jornada, local: rivalDelFijo, visitante: equipoFijo });
       }
 
-      // Emparejar a los demás equipos (El primero con el penúltimo, etc.)
       for (let i = 0; i < partidosPorJornada - 1; i++) {
         const local = equiposRotatorios[i];
         const visitante = equiposRotatorios[equiposRotatorios.length - 2 - i];
         calendario.push({ jornada: jornada, local: local, visitante: visitante });
       }
 
-      // Rotar el array: El último pasa a ser el primero
       equiposRotatorios.unshift(equiposRotatorios.pop());
     }
 
-    // Bucle para crear la VUELTA (Mismos partidos pero invirtiendo Local/Visitante)
-    for (let jornada = 1; jornada <= totalJornadas; jornada++) {
-      const jornadaVuelta = jornada + totalJornadas;
+    // --- VUELTA ---
+    for (let jornada = 1; jornada <= totalJornadasIda; jornada++) {
+      const jornadaVuelta = jornada + totalJornadasIda;
       const partidosIda = calendario.filter(p => p.jornada === jornada);
       
       for (const p of partidosIda) {
@@ -592,28 +583,25 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       }
     }
 
-    // 6. Insertar los partidos en la Base de Datos (Omitiendo los partidos contra el "Fantasma")
-    // Además, calculamos fechas. Imaginemos que cada jornada es 1 día distinto.
+    // 4. Asignar Fechas e Insertar en BD
+    // (Programamos 1 jornada al día a las 20:00 para que haya liga todos los días)
     let fechaBase = new Date();
     fechaBase.setHours(20, 0, 0, 0); 
 
     for (const partido of calendario) {
-      // Si ninguno de los dos es el fantasma (-1)
-      if (partido.local !== -1 && partido.visitante !== -1) {
-        
-        // Sumamos tantos días a hoy como el número de jornada
+      if (partido.local !== 'DESCANSA' && partido.visitante !== 'DESCANSA') {
         const fechaPartido = new Date(fechaBase);
-        fechaPartido.setDate(fechaPartido.getDate() + partido.jornada);
+        fechaPartido.setDate(fechaPartido.getDate() + partido.jornada); // Sumamos días según la jornada
 
         await db.query(`
-          INSERT INTO partidos (id_liga, jornada, id_local, id_visitante, fecha_partido, estado)
+          INSERT INTO partidos (id_liga, jornada, equipo_local, equipo_visitante, fecha_partido, estado)
           VALUES ($1, $2, $3, $4, $5, 'pendiente')
         `, [id_liga, partido.jornada, partido.local, partido.visitante, fechaPartido]);
       }
     }
 
     await db.query('COMMIT');
-    res.json({ message: '¡Calendario generado! Que empiece la Trebol League. 🍀⚽' });
+    res.json({ message: '¡Calendario de Clubes generado con éxito! 38 Jornadas listas.' });
 
   } catch (err) {
     await db.query('ROLLBACK');
@@ -628,15 +616,13 @@ router.get('/:id_liga/calendario', verifyToken, async (req, res) => {
   try {
     const result = await db.query(`
       SELECT 
-        p.id_partido, p.jornada, p.goles_local, p.goles_visitante, p.fecha_partido, p.estado,
-        u1.username as local_name, 
-        u2.username as visitante_name
-      FROM partidos p
-      JOIN users u1 ON p.id_local = u1.id
-      JOIN users u2 ON p.id_visitante = u2.id
-      WHERE p.id_liga = $1
-      ORDER BY p.fecha_partido ASC
+        id_partido, jornada, equipo_local, equipo_visitante, 
+        goles_local, goles_visitante, fecha_partido, estado
+      FROM partidos
+      WHERE id_liga = $1
+      ORDER BY fecha_partido ASC
     `, [id_liga]);
+    
     res.json(result.rows);
   } catch (err) {
     console.error(err);
