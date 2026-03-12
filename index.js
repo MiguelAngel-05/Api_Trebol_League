@@ -1196,9 +1196,10 @@ app.use('/api/mercado', mercadoRouter);
 // CRON JOB: ACTUALIZACIÓN A LAS 00:00 
 app.get('/api/cron/medianoche', async (req, res) => {
   
-  // Protección para que solo Vercel pueda ejecutar esto
+  // Protección para que solo Vercel pueda ejecutar esto leyendo el CRON_SECRET de las variables de entorno
   const authHeader = req.headers.authorization;
-  if (authHeader !== 'Bearer CLAVE_SECRETA_TREBOL') {
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    console.error("Intento fallido de Cron. Token recibido:", authHeader);
     return res.status(401).json({ error: 'No autorizado' });
   }
 
