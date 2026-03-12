@@ -670,6 +670,33 @@ router.get('/:id_liga/calendario', verifyToken, async (req, res) => {
   }
 });
 
+// Obtener detalles y eventos de un partido concreto
+router.get('/:id_liga/partido/:id_partido', verifyToken, async (req, res) => {
+  const { id_liga, id_partido } = req.params;
+  try {
+    const partidoRes = await db.query('SELECT * FROM partidos WHERE id_partido = $1 AND id_liga = $2', [id_partido, id_liga]);
+    if(partidoRes.rows.length === 0) return res.status(404).json({message: 'Partido no encontrado'});
+    
+    // Traemos los eventos y le pegamos el equipo del jugador para saber a quién sumar el gol en vivo
+    const eventosRes = await db.query(`
+      SELECT e.*, f.nombre as jugador_nombre, f.equipo as equipo_jugador, a.nombre as asistente_nombre
+      FROM eventos_partido e
+      LEFT JOIN futbolistas f ON e.id_futbolista = f.id_futbolista
+      LEFT JOIN futbolistas a ON e.id_asistente = a.id_futbolista
+      WHERE e.id_partido = $1
+      ORDER BY e.minuto ASC
+    `, [id_partido]);
+
+    res.json({
+      partido: partidoRes.rows[0],
+      eventos: eventosRes.rows
+    });
+  } catch(err) {
+    console.error(err);
+    res.status(500).json({message: 'Error cargando detalles del partido'});
+  }
+});
+
 app.use('/api/ligas', router);
 
 // Ver ligas de un usuario
