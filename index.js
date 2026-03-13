@@ -1687,6 +1687,32 @@ router.get('/:id_liga/clasificacion-clubes', verifyToken, async (req, res) => {
   }
 });
 
+// Obtener los datos exactos del usuario para la Cabecera (Header)
+router.get('/:id_liga/mi-cabecera', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const id_user = req.userId; // Sacamos tu ID del token de sesión
+
+  try {
+    const query = `
+      SELECT u.username, u.avatar, ul.dinero 
+      FROM users u
+      JOIN users_liga ul ON u.id = ul.id_user
+      WHERE u.id = $2 AND ul.id_liga = $1
+    `;
+    const result = await db.query(query, [id_liga, id_user]);
+    
+    // Si todo va bien, devolvemos tus datos
+    if (result.rows.length > 0) {
+      res.json(result.rows[0]);
+    } else {
+      res.status(404).json({message: 'Usuario no encontrado en esta liga'});
+    }
+  } catch(err) {
+    console.error(err);
+    res.status(500).json({message: 'Error cargando cabecera'});
+  }
+});
+
 
 // Export para Vercel
 module.exports = app;
