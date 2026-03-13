@@ -1571,5 +1571,59 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
   }
 });
 
+// 1. Obtener los puntos de MIS JUGADORES (Acumulado de todas las jornadas)
+router.get('/:id_liga/mis-puntos', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const id_user = req.userId; // Asumo que tu middleware verifyToken guarda el ID del usuario aquí
+
+  try {
+    const query = `
+      SELECT 
+        f.id_futbolista, 
+        f.nombre, 
+        f.posicion, 
+        f.precio as valor,
+        COALESCE(SUM(rp.puntos_totales), 0) as puntos,
+        COALESCE(SUM(rp.goles), 0) as goles_marcados,
+        COALESCE(SUM(rp.asistencias), 0) as asistencias
+      FROM futbolista_user_liga ful
+      JOIN futbolistas f ON ful.id_futbolista = f.id_futbolista
+      LEFT JOIN rendimiento_partido rp ON f.id_futbolista = rp.id_futbolista AND rp.id_liga = $1
+      WHERE ful.id_liga = $1 AND ful.id_user = $2
+      GROUP BY f.id_futbolista, f.nombre, f.posicion, f.precio
+      ORDER BY puntos DESC;
+    `;
+    const misJugadores = await db.query(query, [id_liga, id_user]);
+    res.json(misJugadores.rows);
+  } catch(err) {
+    console.error(err);
+    res.status(500).json({message: 'Error cargando los puntos de tus jugadores'});
+  }
+});
+
+// 2. Obtener la CLASIFICACIÓN GENERAL de la Liga
+router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  try {
+    // Unimos los usuarios con sus puntos en users_liga para sacar el ranking oficial
+    const query = `
+      SELECT 
+        u.username AS equipo, 
+        ul.puntos AS puntos_totales,
+        ul.dinero AS presupuesto
+      FROM users_liga ul
+      JOIN users u ON ul.id_user = u.id
+      WHERE ul.id_liga = $1
+      ORDER BY ul.puntos DESC, ul.dinero DESC;
+    `;
+    const clasificacion = await db.query(query, [id_liga]);
+    res.json(clasificacion.rows);
+  } catch(err) {
+    console.error(err);
+    res.status(500).json({message: 'Error cargando clasificación general'});
+  }
+});
+
+
 // Export para Vercel
 module.exports = app;
