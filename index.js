@@ -1571,35 +1571,6 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
   }
 });
 
-// 1. Obtener los puntos de MIS JUGADORES (Acumulado de todas las jornadas)
-router.get('/:id_liga/mis-puntos', verifyToken, async (req, res) => {
-  const { id_liga } = req.params;
-  const id_user = req.userId; // Asumo que tu middleware verifyToken guarda el ID del usuario aquí
-
-  try {
-    const query = `
-      SELECT 
-        f.id_futbolista, 
-        f.nombre, 
-        f.posicion, 
-        f.precio as valor,
-        COALESCE(SUM(rp.puntos_totales), 0) as puntos,
-        COALESCE(SUM(rp.goles), 0) as goles_marcados,
-        COALESCE(SUM(rp.asistencias), 0) as asistencias
-      FROM futbolista_user_liga ful
-      JOIN futbolistas f ON ful.id_futbolista = f.id_futbolista
-      LEFT JOIN rendimiento_partido rp ON f.id_futbolista = rp.id_futbolista AND rp.id_liga = $1
-      WHERE ful.id_liga = $1 AND ful.id_user = $2
-      GROUP BY f.id_futbolista, f.nombre, f.posicion, f.precio
-      ORDER BY puntos DESC;
-    `;
-    const misJugadores = await db.query(query, [id_liga, id_user]);
-    res.json(misJugadores.rows);
-  } catch(err) {
-    console.error(err);
-    res.status(500).json({message: 'Error cargando los puntos de tus jugadores'});
-  }
-});
 
 // 2. Obtener la CLASIFICACIÓN GENERAL de la Liga
 router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
@@ -1621,6 +1592,50 @@ router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
   } catch(err) {
     console.error(err);
     res.status(500).json({message: 'Error cargando clasificación general'});
+  }
+});
+
+// A. Obtener lista de todos los mánagers de la liga (Para el desplegable)
+router.get('/:id_liga/managers', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  try {
+    const query = `
+      SELECT u.id, u.username 
+      FROM users_liga ul
+      JOIN users u ON ul.id_user = u.id
+      WHERE ul.id_liga = $1
+    `;
+    const result = await db.query(query, [id_liga]);
+    res.json(result.rows);
+  } catch(err) {
+    res.status(500).json({message: 'Error cargando mánagers'});
+  }
+});
+
+// B. Obtener los puntos de un Mánager concreto en una Jornada concreta
+router.get('/:id_liga/puntos-jornada', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const { id_manager, jornada } = req.query; // Lo recibimos como parámetros
+
+  try {
+    const query = `
+      SELECT 
+        f.nombre, 
+        f.posicion, 
+        f.precio as valor,
+        rp.puntos_totales as puntos,
+        rp.goles,
+        rp.asistencias
+      FROM rendimiento_partido rp
+      JOIN partidos p ON rp.id_partido = p.id_partido
+      JOIN futbolistas f ON rp.id_futbolista = f.id_futbolista
+      WHERE rp.id_liga = $1 AND rp.id_user = $2 AND p.jornada = $3
+      ORDER BY rp.puntos_totales DESC;
+    `;
+    const result = await db.query(query, [id_liga, id_manager, jornada]);
+    res.json(result.rows);
+  } catch(err) {
+    res.status(500).json({message: 'Error cargando puntos de la jornada'});
   }
 });
 
