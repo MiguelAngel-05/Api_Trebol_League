@@ -1639,6 +1639,54 @@ router.get('/:id_liga/puntos-jornada', verifyToken, async (req, res) => {
   }
 });
 
+// Obtener la CLASIFICACIÓN REAL DE LOS CLUBES (Athletic Hullera, etc.)
+router.get('/:id_liga/clasificacion-clubes', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  try {
+    const query = `
+      WITH Resultados AS (
+        SELECT 
+          equipo_local AS equipo,
+          goles_local AS gf,
+          goles_visitante AS gc,
+          CASE WHEN goles_local > goles_visitante THEN 1 ELSE 0 END AS pg,
+          CASE WHEN goles_local = goles_visitante THEN 1 ELSE 0 END AS pe,
+          CASE WHEN goles_local < goles_visitante THEN 1 ELSE 0 END AS pp,
+          CASE WHEN goles_local > goles_visitante THEN 3 WHEN goles_local = goles_visitante THEN 1 ELSE 0 END AS pts
+        FROM partidos WHERE id_liga = $1 AND estado = 'finalizado'
+        UNION ALL
+        SELECT 
+          equipo_visitante AS equipo,
+          goles_visitante AS gf,
+          goles_local AS gc,
+          CASE WHEN goles_visitante > goles_local THEN 1 ELSE 0 END AS pg,
+          CASE WHEN goles_visitante = goles_local THEN 1 ELSE 0 END AS pe,
+          CASE WHEN goles_visitante < goles_local THEN 1 ELSE 0 END AS pp,
+          CASE WHEN goles_visitante > goles_local THEN 3 WHEN goles_visitante = goles_local THEN 1 ELSE 0 END AS pts
+        FROM partidos WHERE id_liga = $1 AND estado = 'finalizado'
+      )
+      SELECT 
+        equipo,
+        COUNT(*) AS pj,
+        SUM(pg) AS pg,
+        SUM(pe) AS pe,
+        SUM(pp) AS pp,
+        SUM(gf) AS gf,
+        SUM(gc) AS gc,
+        (SUM(gf) - SUM(gc)) AS dif,
+        SUM(pts) AS puntos_totales
+      FROM Resultados
+      GROUP BY equipo
+      ORDER BY puntos_totales DESC, dif DESC, gf DESC;
+    `;
+    const clasificacion = await db.query(query, [id_liga]);
+    res.json(clasificacion.rows);
+  } catch(err) {
+    console.error(err);
+    res.status(500).json({message: 'Error calculando la clasificación de los clubes'});
+  }
+});
+
 
 // Export para Vercel
 module.exports = app;
