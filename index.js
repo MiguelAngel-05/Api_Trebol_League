@@ -1687,24 +1687,5 @@ router.get('/:id_liga/clasificacion-clubes', verifyToken, async (req, res) => {
   }
 });
 
-// Obtener los datos exactos del usuario para la Cabecera (Header)
-router.get('/:id_liga/mi-cabecera', verifyToken, async (req, res) => {
-  const { id_liga } = req.params;
-  const id_user = req.userId; 
-
-  try {
-    const query = `
-      SELECT u.username, u.avatar, ul.dinero 
-      FROM users u
-      JOIN users_liga ul ON u.id = ul.id_user
-      WHERE u.id = $2 AND ul.id_liga = $1
-    `;
-    const result = await db.query(query, [id_liga, id_user]);
-    res.json(result.rows[0]);
-  } catch(err) {
-    res.status(500).json({message: 'Error en cabecera'});
-  }
-});
-
 // Export para Vercel
 module.exports = app;
