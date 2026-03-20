@@ -1533,8 +1533,8 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
       // 3. Buscar qué Mánagers alinearon a estos jugadores (es_titular = true) y darles los puntos
       const titularesRes = await db.query(`
         SELECT id_user, id_futbolista FROM futbolista_user_liga 
-        WHERE id_liga = $1 AND es_titular = true
-      `, [partido.id_liga]);
+        WHERE id_liga = (SELECT id_liga FROM partidos WHERE id_partido = $1) AND es_titular = true
+      `, [partido.id_partido]);
 
       for (const titular of titularesRes.rows) {
         const statsJugador = statsPartido[titular.id_futbolista];
