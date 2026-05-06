@@ -1615,7 +1615,7 @@ router.get('/:id_liga/managers', verifyToken, async (req, res) => {
 // B. Obtener los puntos de un Mánager concreto en una Jornada concreta
 router.get('/:id_liga/puntos-jornada', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
-  const { id_manager, jornada } = req.query; // Lo recibimos como parámetros
+  const { id_manager, jornada } = req.query;
 
   try {
     const query = `
@@ -1629,15 +1629,26 @@ router.get('/:id_liga/puntos-jornada', verifyToken, async (req, res) => {
       FROM rendimiento_partido rp
       JOIN partidos p ON rp.id_partido = p.id_partido
       JOIN futbolistas f ON rp.id_futbolista = f.id_futbolista
-      WHERE rp.id_liga = $1 AND rp.id_user = $2 AND p.jornada = $3
+      WHERE p.id_liga = $1          -- <--- Cambiado de rp.id_liga a p.id_liga
+        AND rp.id_user = $2 
+        AND p.jornada = $3
       ORDER BY rp.puntos_totales DESC;
     `;
-    const result = await db.query(query, [id_liga, id_manager, jornada]);
+    
+    // Asegúrate de pasar los parámetros como números para evitar conflictos de tipos
+    const result = await db.query(query, [
+      parseInt(id_liga), 
+      parseInt(id_manager), 
+      parseInt(jornada)
+    ]);
+    
     res.json(result.rows);
   } catch(err) {
-    res.status(500).json({message: 'Error cargando puntos de la jornada'});
+    console.error("Error en puntos-jornada:", err);
+    res.status(500).json({message: 'Error cargando puntos'});
   }
 });
+
 
 // Obtener la CLASIFICACIÓN REAL DE LOS CLUBES (Athletic Hullera, etc.)
 router.get('/:id_liga/clasificacion-clubes', verifyToken, async (req, res) => {
