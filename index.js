@@ -900,6 +900,7 @@ router.post('/:id_liga/tienda/abrir-normal', verifyToken, async (req, res) => {
     let jugadorRes = await db.query(`
       SELECT * FROM futbolistas 
       WHERE media >= $1 AND media <= $2 
+      AND tipo_carta = 'normal'
       AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $3)
       AND id_futbolista NOT IN (SELECT id_futbolista FROM mercado_liga WHERE id_liga = $3)
       ORDER BY RANDOM() LIMIT 1
@@ -977,6 +978,7 @@ router.post('/:id_liga/tienda/abrir-posicion', verifyToken, async (req, res) => 
     let jugadorRes = await db.query(`
       SELECT * FROM futbolistas 
       WHERE media >= $1 AND media <= $2 
+      AND tipo_carta = 'normal'
       AND TRIM(UPPER(posicion)) = $3
       AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $4)
       AND id_futbolista NOT IN (SELECT id_futbolista FROM mercado_liga WHERE id_liga = $4)
@@ -1014,6 +1016,90 @@ router.post('/:id_liga/tienda/abrir-posicion', verifyToken, async (req, res) => 
     await db.query('ROLLBACK');
     console.error("Error abriendo sobre de posición:", err);
     res.status(400).json({ message: err.message || 'Error al abrir el sobre.' });
+  }
+});
+
+// Abrir Sobre ESPECIAL (Probabilidad de Normal o Especial)
+router.post('/:id_liga/tienda/abrir-especial', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const id_user = req.user.id;
+  const precioSobre = 25000000; // 25 Millones de Tc
+
+  try {
+    await db.query('BEGIN');
+
+    // 1. Validar saldo
+    const userRes = await db.query('SELECT dinero FROM users_liga WHERE id_liga = $1 AND id_user = $2', [id_liga, id_user]);
+    if (userRes.rows.length === 0 || Number(userRes.rows[0].dinero) < precioSobre) {
+      throw new Error('No tienes suficientes Tc. El sobre cuesta 25 Millones.');
+    }
+
+    // 2. TIRADA PRINCIPAL: ¿Toca Normal o Especial?
+    const esEspecial = (Math.random() * 100) < 20; // 20% de probabilidad de ser Especial
+
+    let minMedia = 0;
+    let maxMedia = 99;
+    let tipoCarta = esEspecial ? 'especial' : 'normal';
+
+    // 3. TIRADA SECUNDARIA: ¿De qué nivel es dentro de su categoría?
+    const tiradaNivel = Math.random() * 100;
+
+    if (esEspecial) {
+      // Porcentajes para Cartas ESPECIALES
+      if (tiradaNivel < 70) { minMedia = 77; maxMedia = 82; } // 70% Especial Nivel 1
+      else if (tiradaNivel < 95) { minMedia = 83; maxMedia = 88; } // 25% Especial Nivel 2
+      else { minMedia = 89; maxMedia = 95; } // 5% Especial LEYENDA (MotoChacón)
+    } else {
+      // Porcentajes MEJORADOS para Cartas NORMALES (Ya que el sobre es caro, evitamos muchos bronces)
+      if (tiradaNivel < 40) { minMedia = 60; maxMedia = 69; } // 40% Bronce (antes 60%)
+      else if (tiradaNivel < 75) { minMedia = 70; maxMedia = 79; } // 35% Plata (antes 25%)
+      else if (tiradaNivel < 95) { minMedia = 80; maxMedia = 89; } // 20% Oro (antes 13%)
+      else { minMedia = 90; maxMedia = 95; } // 5% Diamante (antes 2%)
+    }
+
+    // 4. Buscar el jugador con esas condiciones que esté LIBRE
+    let jugadorRes = await db.query(`
+      SELECT * FROM futbolistas 
+      WHERE media >= $1 AND media <= $2 
+      AND tipo_carta = $3
+      AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $4)
+      AND id_futbolista NOT IN (SELECT id_futbolista FROM mercado_liga WHERE id_liga = $4)
+      ORDER BY RANDOM() LIMIT 1
+    `, [minMedia, maxMedia, tipoCarta, id_liga]);
+
+    // 5. Fallback por si no quedan jugadores de ese nivel en esa categoría
+    if (jugadorRes.rows.length === 0) {
+      jugadorRes = await db.query(`
+        SELECT * FROM futbolistas 
+        WHERE tipo_carta = $1
+        AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $2)
+        AND id_futbolista NOT IN (SELECT id_futbolista FROM mercado_liga WHERE id_liga = $2)
+        ORDER BY RANDOM() LIMIT 1
+      `, [tipoCarta, id_liga]);
+      
+      if (jugadorRes.rows.length === 0) {
+        throw new Error(`¡Ya no quedan cartas libres de tipo ${tipoCarta} en la liga!`);
+      }
+    }
+
+    const jugadorTocado = jugadorRes.rows[0];
+
+    // 6. Cobrar los 25 Millones
+    await db.query('UPDATE users_liga SET dinero = dinero - $1 WHERE id_liga = $2 AND id_user = $3', [precioSobre, id_liga, id_user]);
+
+    // 7. Entregar el jugador
+    await db.query('INSERT INTO futbolista_user_liga (id_user, id_liga, id_futbolista, en_venta, precio_venta) VALUES ($1, $2, $3, false, 0)', 
+      [id_user, id_liga, jugadorTocado.id_futbolista]);
+
+    await db.query('COMMIT'); 
+    
+    // Devolvemos el jugador entero. El frontend leerá "jugador.tipo_carta" para la animación.
+    res.json({ mensaje: 'Sobre abierto con éxito', jugador: jugadorTocado });
+
+  } catch (err) {
+    await db.query('ROLLBACK'); 
+    console.error("Error abriendo sobre especial:", err);
+    res.status(400).json({ message: err.message || 'Error al abrir el sobre especial.' });
   }
 });
 
