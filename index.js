@@ -729,31 +729,34 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
     `, [id_liga]);
 
     const mercado = await db.query(`
-      -- PARTE 1: JUGADORES DE LA BANCA
+      -- PARTE 1: JUGADORES DE LA BANCA (Filtrando al Real Trébol)
       SELECT 
         f.id_futbolista, f.nombre, f.posicion, f.equipo, f.media, f.precio as precio, 
         NULL::int as id_vendedor, NULL::text as vendedor_name,
         CASE WHEN p.id_user IS NOT NULL THEN true ELSE false END as pujado_por_mi,
         COALESCE(p.monto, 0) as mi_puja_actual,
         f.imagen, f.ataque, f.defensa, f.parada, f.pase,
-        f.tipo_carta, f.codigo_habilidad, f.descripcion -- <--- NUEVOS CAMPOS
+        f.tipo_carta, f.codigo_habilidad, f.descripcion
       FROM mercado_liga ml
       JOIN futbolistas f ON f.id_futbolista = ml.id_futbolista
       LEFT JOIN pujas p ON p.id_futbolista = f.id_futbolista AND p.id_liga = $1 AND p.id_user = $2
-      WHERE ml.id_liga = $1
+      WHERE ml.id_liga = $1 
+        AND f.equipo != 'Real Trébol FC' -- <--- Veto a los dioses en la banca
 
       UNION
 
-      -- PARTE 2: JUGADORES DE OTROS USUARIOS
+      -- PARTE 2: JUGADORES DE OTROS USUARIOS (Filtrando al Real Trébol)
       SELECT 
         f.id_futbolista, f.nombre, f.posicion, f.equipo, f.media, ful.precio_venta as precio, 
         ful.id_user as id_vendedor, u.username as vendedor_name, false as pujado_por_mi, 0 as mi_puja_actual,
         f.imagen, f.ataque, f.defensa, f.parada, f.pase,
-        f.tipo_carta, f.codigo_habilidad, f.descripcion -- <--- NUEVOS CAMPOS
+        f.tipo_carta, f.codigo_habilidad, f.descripcion
       FROM futbolista_user_liga ful
       JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
       JOIN users u ON u.id = ful.id_user
-      WHERE ful.id_liga = $1 AND ful.en_venta = true
+      WHERE ful.id_liga = $1 
+        AND ful.en_venta = true 
+        AND f.equipo != 'Real Trébol FC' -- <--- Veto a los dioses en ventas de usuarios
     `, [id_liga, idUser]);
 
     const fechaGen = mercadoActual.rows.length ? mercadoActual.rows[0].fecha_generacion : new Date();
@@ -1311,7 +1314,7 @@ app.use('/api/mercado', mercadoRouter);
 // CRON JOB: ACTUALIZACIÓN A LAS 00:00 
 app.get('/api/cron/medianoche', async (req, res) => {
   
-  // Protección para que solo Vercel pueda ejecutar esto leyendo el CRON_SECRET de las variables de entorno
+  // Protección para que solo Vercel pueda ejecutar esto leyendo el CRON_SECRET
   const authHeader = req.headers.authorization;
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
     console.error("Intento fallido de Cron. Token recibido:", authHeader);
@@ -1378,32 +1381,25 @@ app.get('/api/cron/medianoche', async (req, res) => {
       for (const jv of jugadoresEnVenta.rows) {
         const idVendedor = jv.id_user;
         const idFutbolista = jv.id_futbolista;
-        // Calculamos el 80% del valor BASE del jugador (f.precio)
         const valorVentaSistema = Math.floor(Number(jv.precio) * 0.8); 
 
-        // A) Ingresar el 80% del dinero al vendedor
         await db.query('UPDATE users_liga SET dinero = dinero + $1 WHERE id_user = $2 AND id_liga = $3', 
           [valorVentaSistema, idVendedor, id_liga]);
 
-        // B) Quitarle el jugador de su plantilla
         await db.query('DELETE FROM futbolista_user_liga WHERE id_user = $1 AND id_liga = $2 AND id_futbolista = $3', 
           [idVendedor, id_liga, idFutbolista]);
 
-        // C) Registrar la operación en el historial (Vendedor: User | Comprador: NULL/Sistema)
         await db.query(`
           INSERT INTO historial_transferencias (id_liga, id_futbolista, id_vendedor, id_comprador, monto, fecha, tipo)
           VALUES ($1, $2, $3, NULL, $4, NOW(), 'venta_sistema')
         `, [id_liga, idFutbolista, idVendedor, valorVentaSistema]);
-        // D) Mandar mensaje al buzón del usuario avisando de la venta al sistema
-        // Primero sacamos el nombre del jugador para que el mensaje quede guapo
+
         const futData = await db.query('SELECT nombre FROM futbolistas WHERE id_futbolista = $1', [idFutbolista]);
         const nombreJugadorVendido = futData.rows[0]?.nombre || 'un jugador';
 
-        // Buscamos al owner (Administrador) de la liga para que actúe como remitente del correo
         const ownerRes = await db.query("SELECT id_user FROM users_liga WHERE id_liga = $1 AND rol = 'owner' LIMIT 1", [id_liga]);
         const idPresidente = ownerRes.rows.length > 0 ? ownerRes.rows[0].id_user : idVendedor;
 
-        // Insertamos el correo en el centro de mensajes
         await db.query(`
           INSERT INTO mensajes_privados (id_liga, id_remitente, id_destinatario, tipo, asunto, contenido)
           VALUES ($1, $2, $3, 'texto', '💸 Venta al Sistema', $4)
@@ -1414,20 +1410,21 @@ app.get('/api/cron/medianoche', async (req, res) => {
           `El mercado ha cerrado y nadie ha pujado por él. El sistema ha comprado a tu jugador ${nombreJugadorVendido} por el 80% de su valor base (${valorVentaSistema} Tc). El dinero ya ha sido ingresado en tu cuenta.`
         ]);
       }
-      // ==========================================
 
       // 4. Limpiar el mercado viejo y las pujas de ayer de ESTA liga
       await db.query('DELETE FROM pujas WHERE id_liga = $1', [id_liga]);
       await db.query('DELETE FROM mercado_liga WHERE id_liga = $1', [id_liga]);
 
       // 5. Generar los 20 NUEVOS jugadores asegurando 3 de cada posición
+      // MODIFICACIÓN: Se añade el filtro de equipo != 'Real Trébol FC'
       const nuevosJugadores = await db.query(`
         WITH Disponibles AS (
           SELECT id_futbolista, TRIM(UPPER(posicion)) as pos_limpia,
                  ROW_NUMBER() OVER(PARTITION BY TRIM(UPPER(posicion)) ORDER BY RANDOM()) as rn,
                  RANDOM() as rnd
           FROM futbolistas 
-          WHERE id_futbolista NOT IN (
+          WHERE equipo != 'Real Trébol FC' -- <--- LOS DIOSES NO VAN AL MERCADO
+            AND id_futbolista NOT IN (
             SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $1
           )
         )
