@@ -352,6 +352,7 @@ router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
       SELECT 
         f.id_futbolista, f.nombre, f.posicion, f.precio, f.equipo, f.media,
         f.imagen, f.ataque, f.defensa, f.parada, f.pase,
+        f.tipo_carta, f.codigo_habilidad, f.descripcion, -- <--- NUEVOS CAMPOS
         ful.en_venta, ful.precio_venta, ful.es_titular, 
         ful.hueco_plantilla
       FROM futbolista_user_liga ful
@@ -428,6 +429,7 @@ router.get('/:id_liga/jugadores-rival/:id_usuario_rival', verifyToken, async (re
       SELECT 
         f.id_futbolista, f.nombre, f.posicion, f.precio, f.equipo, f.media,
         f.imagen, f.ataque, f.defensa, f.parada, f.pase,
+        f.tipo_carta, f.codigo_habilidad, f.descripcion, -- <--- NUEVOS CAMPOS
         ful.en_venta, ful.precio_venta
       FROM futbolista_user_liga ful
       JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
@@ -722,12 +724,10 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
   const idUser = req.user.id;
 
   try {
-    // Solo obtenemos la fecha para el frontend
     const mercadoActual = await db.query(`
       SELECT fecha_generacion FROM mercado_liga WHERE id_liga = $1 LIMIT 1
     `, [id_liga]);
 
-    // Devolver mercado actual (con JOIN para escudos y media)
     const mercado = await db.query(`
       -- PARTE 1: JUGADORES DE LA BANCA
       SELECT 
@@ -735,7 +735,8 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
         NULL::int as id_vendedor, NULL::text as vendedor_name,
         CASE WHEN p.id_user IS NOT NULL THEN true ELSE false END as pujado_por_mi,
         COALESCE(p.monto, 0) as mi_puja_actual,
-        f.imagen, f.ataque, f.defensa, f.parada, f.pase
+        f.imagen, f.ataque, f.defensa, f.parada, f.pase,
+        f.tipo_carta, f.codigo_habilidad, f.descripcion -- <--- NUEVOS CAMPOS
       FROM mercado_liga ml
       JOIN futbolistas f ON f.id_futbolista = ml.id_futbolista
       LEFT JOIN pujas p ON p.id_futbolista = f.id_futbolista AND p.id_liga = $1 AND p.id_user = $2
@@ -747,7 +748,8 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
       SELECT 
         f.id_futbolista, f.nombre, f.posicion, f.equipo, f.media, ful.precio_venta as precio, 
         ful.id_user as id_vendedor, u.username as vendedor_name, false as pujado_por_mi, 0 as mi_puja_actual,
-        f.imagen, f.ataque, f.defensa, f.parada, f.pase
+        f.imagen, f.ataque, f.defensa, f.parada, f.pase,
+        f.tipo_carta, f.codigo_habilidad, f.descripcion -- <--- NUEVOS CAMPOS
       FROM futbolista_user_liga ful
       JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
       JOIN users u ON u.id = ful.id_user
