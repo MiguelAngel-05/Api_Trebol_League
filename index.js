@@ -870,7 +870,7 @@ mercadoRouter.post('/compra-directa', verifyToken, async (req, res) => {
 
 
 // SOBRES
-// Abrir sobre normal 
+// Abrir sobre NORMAL 
 router.post('/:id_liga/tienda/abrir-normal', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const id_user = req.user.id;
@@ -1105,6 +1105,104 @@ router.post('/:id_liga/tienda/abrir-especial', verifyToken, async (req, res) => 
     await db.query('ROLLBACK'); 
     console.error("Error abriendo sobre especial:", err);
     res.status(400).json({ message: err.message || 'Error al abrir el sobre especial.' });
+  }
+});
+
+// Abrir sobre ULTRA (EL SOBRE DEFINITIVO)
+router.post('/:id_liga/tienda/abrir-ultra', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const id_user = req.user.id;
+  const precioSobre = 50000000; // 50 Millones de Tc
+
+  try {
+    await db.query('BEGIN'); // Transacción segura
+
+    // 1. Verificar si el usuario tiene la pasta
+    const userRes = await db.query(
+      'SELECT dinero FROM users_liga WHERE id_liga = $1 AND id_user = $2',
+      [id_liga, id_user]
+    );
+
+    if (userRes.rows.length === 0 || Number(userRes.rows[0].dinero) < precioSobre) {
+      throw new Error('Fondos insuficientes para el Sobre Ultra (50M Tc).');
+    }
+
+    // 2. TIRADA DE RAREZA (Probabilidades: 5% Ultra, 25% Especial, 70% Normal)
+    const suerte = Math.random() * 100;
+    let tipoTocado = 'normal';
+    
+    if (suerte < 5) {
+      tipoTocado = 'ultra'; // ¡Día de suerte!
+    } else if (suerte < 30) {
+      tipoTocado = 'especial';
+    }
+
+    // 3. BUSCAR JUGADOR DISPONIBLE
+    // - Si es Ultra, buscamos en el Real Trébol FC.
+    // - Si es el resto, buscamos en los otros equipos.
+    // - Importante: Que no lo tenga nadie en la liga y no esté en el mercado.
+    let queryJugador = `
+      SELECT * FROM futbolistas 
+      WHERE tipo_carta = $1 
+      AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $2)
+      AND id_futbolista NOT IN (SELECT id_futbolista FROM mercado_liga WHERE id_liga = $2)
+    `;
+
+    // Filtro extra por equipo
+    if (tipoTocado === 'ultra') {
+      queryJugador += " AND equipo = 'Real Trébol FC'";
+    } else {
+      queryJugador += " AND equipo != 'Real Trébol FC'";
+    }
+
+    queryJugador += " ORDER BY RANDOM() LIMIT 1";
+
+    let jugadorRes = await db.query(queryJugador, [tipoTocado, id_liga]);
+
+    // 4. FALLBACK: Si no quedan cartas de esa rareza, bajamos un escalón
+    if (jugadorRes.rows.length === 0) {
+      jugadorRes = await db.query(`
+        SELECT * FROM futbolistas 
+        WHERE equipo != 'Real Trébol FC'
+        AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $1)
+        AND id_futbolista NOT IN (SELECT id_futbolista FROM mercado_liga WHERE id_liga = $1)
+        ORDER BY media DESC LIMIT 1
+      `, [id_liga]);
+      
+      if (jugadorRes.rows.length === 0) {
+        throw new Error('¡Increíble! Ya no quedan jugadores libres en esta liga.');
+      }
+    }
+
+    const crack = jugadorRes.rows[0];
+
+    // 5. COBRAR Y ENTREGAR
+    await db.query(
+      'UPDATE users_liga SET dinero = dinero - $1 WHERE id_liga = $2 AND id_user = $3',
+      [precioSobre, id_liga, id_user]
+    );
+
+    await db.query(
+      'INSERT INTO futbolista_user_liga (id_user, id_liga, id_futbolista) VALUES ($1, $2, $3)',
+      [id_user, id_liga, crack.id_futbolista]
+    );
+
+    // 6. ANUNCIO ÉPICO (Si es Ultra)
+    if (crack.tipo_carta === 'ultra') {
+      const msj = `👑 ¡HISTÓRICO! @${req.user.username} ha subido al Monte Trébol y ha reclutado a ${crack.nombre} (ULTRA). ¡La isla tiembla!`;
+      await db.query(
+        'INSERT INTO chat_general (id_liga, id_user, mensaje) VALUES ($1, $2, $3)',
+        [id_liga, id_user, msj]
+      );
+    }
+
+    await db.query('COMMIT');
+    res.json({ mensaje: '¡Sobre Ultra procesado!', jugador: crack });
+
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error(err);
+    res.status(400).json({ message: err.message });
   }
 });
 
