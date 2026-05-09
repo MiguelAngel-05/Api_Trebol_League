@@ -164,7 +164,7 @@ router.post('/', verifyToken, async (req, res) => {
     // Añadir al creador en users_liga como owner
     await db.query(
       'INSERT INTO users_liga (id_user, id_liga, rol, dinero, puntos) VALUES ($1,$2,$3,$4,$5)',
-      [idUser, idLiga, 'owner', 100000000, 0] // 100 Millones iniciales
+      [idUser, idLiga, 'owner', 0, 0]
     );
 
     // Actualizar el número de jugadores a 1 (El creador)
@@ -242,6 +242,40 @@ router.delete('/:id_liga', verifyToken, requireLeagueRole(['owner']), async (req
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Error eliminando liga' });
+  }
+});
+
+// 🗑️ Terminar/Reiniciar Liga con opciones
+router.post('/:id_liga/reset', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
+  const { id_liga } = req.params;
+  const { borrarPuntos, borrarJugadores, borrarJornadas, borrarDinero } = req.body;
+
+  try {
+    await db.query('BEGIN');
+
+    if (borrarJornadas) {
+      await db.query('DELETE FROM rendimiento_partido WHERE id_partido IN (SELECT id_partido FROM partidos WHERE id_liga = $1)', [id_liga]);
+      await db.query('DELETE FROM eventos_partido WHERE id_partido IN (SELECT id_partido FROM partidos WHERE id_liga = $1)', [id_liga]);
+      await db.query('DELETE FROM partidos WHERE id_liga = $1', [id_liga]);
+    }
+
+    if (borrarPuntos) {
+      await db.query('UPDATE users_liga SET puntos = 0 WHERE id_liga = $1', [id_liga]);
+    }
+
+    if (borrarDinero) {
+      await db.query('UPDATE users_liga SET dinero = 0 WHERE id_liga = $1', [id_liga]);
+    }
+
+    if (borrarJugadores) {
+      await db.query('DELETE FROM futbolista_user_liga WHERE id_liga = $1', [id_liga]);
+    }
+
+    await db.query('COMMIT');
+    res.json({ message: 'Acciones de reset aplicadas con éxito.' });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    res.status(500).json({ error: 'Error al reiniciar la liga' });
   }
 });
 
@@ -542,8 +576,10 @@ router.post('/:id_liga/cancelar-venta', verifyToken, async (req, res) => {
 
 //CALENDARIO
 // Generar el calendario de la liga
+// Generar el calendario de la liga y configurar la temporada
 router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
   const { id_liga } = req.params;
+  const { dineroInicial, darPlantilla } = req.body; // Recibimos la nueva configuración
 
   try {
     await db.query('BEGIN'); // Transacción segura
@@ -554,24 +590,80 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       throw new Error('La liga ya tiene un calendario generado.');
     }
 
-    // 2. Extraer TODOS los equipos únicos EXCEPTO el 'Real Trébol FC'
+    // 2. REPARTO ECONÓMICO: Asignar el presupuesto inicial a todos los mánagers
+    if (dineroInicial !== undefined) {
+      await db.query('UPDATE users_liga SET dinero = $1 WHERE id_liga = $2', [dineroInicial, id_liga]);
+    }
+
+    // 3. REPARTO DE PLANTILLAS (El Draft)
+    if (darPlantilla) {
+      const usersRes = await db.query('SELECT id_user FROM users_liga WHERE id_liga = $1', [id_liga]);
+      
+      // Función para barajar arrays (la usaremos para mezclar las posiciones)
+      const shuffleArray = (array) => {
+        for (let i = array.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [array[i], array[j]] = [array[j], array[i]];
+        }
+        return array;
+      };
+
+      for (const u of usersRes.rows) {
+        // Creamos la plantilla base estricta: 1 PT, 4 DF, 3 MC, 3 DL
+        let posiciones = ['PT', 'DF', 'DF', 'DF', 'DF', 'MC', 'MC', 'MC', 'DL', 'DL', 'DL'];
+        posiciones = shuffleArray(posiciones); // Las barajamos para que el "crack" caiga al azar
+
+        // Configuración de los "Cofres" de calidad
+        const buckets = [
+          { mMin: 60, mMax: 65, cant: 8 }, // 8 de relleno
+          { mMin: 66, mMax: 70, cant: 2 }, // 2 decentes
+          { mMin: 75, mMax: 80, cant: 1 }  // 1 estrella
+        ];
+
+        for (const bucket of buckets) {
+          for (let i = 0; i < bucket.cant; i++) {
+            const posActual = posiciones.shift(); 
+            
+            // Buscar un jugador libre con esa media y esa posición
+            const player = await db.query(`
+              SELECT id_futbolista FROM futbolistas 
+              WHERE media BETWEEN $1 AND $2 
+                AND TRIM(UPPER(posicion)) = $3 
+                AND tipo_carta = 'normal' 
+                AND equipo != 'Real Trébol FC'
+                AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $4)
+              ORDER BY RANDOM() LIMIT 1
+            `, [bucket.mMin, bucket.mMax, posActual, id_liga]);
+
+            // Si hay un jugador disponible, se lo damos directo al banquillo
+            if (player.rows.length > 0) {
+              await db.query(`
+                INSERT INTO futbolista_user_liga (id_user, id_liga, id_futbolista, es_titular, hueco_plantilla, en_venta, precio_venta) 
+                VALUES ($1, $2, $3, false, NULL, false, 0)
+              `, [u.id_user, id_liga, player.rows[0].id_futbolista]);
+            }
+          }
+        }
+      }
+    }
+
+    // 4. PREPARAR EL CALENDARIO (Extraer equipos IA)
     const teamsRes = await db.query("SELECT DISTINCT equipo FROM futbolistas WHERE equipo != 'Real Trébol FC'");
     let equipos = teamsRes.rows.map(row => row.equipo);
 
     if (equipos.length < 2) {
-      throw new Error('No hay suficientes equipos en la base de datos.');
+      throw new Error('No hay suficientes equipos en la base de datos para jugar.');
     }
 
-    if (equipos.length % 2 !== 0) {
-      equipos.push('DESCANSA'); 
-    }
+    // Si los equipos son impares, añadimos un equipo fantasma para los descansos
+    if (equipos.length % 2 !== 0) equipos.push('DESCANSA'); 
 
     const totalEquipos = equipos.length;
     const totalJornadasIda = totalEquipos - 1;
     const partidosPorJornada = totalEquipos / 2;
     let calendario = [];
 
-    // 3. ALGORITMO ROUND-ROBIN (Ida y Vuelta)
+    // 5. ALGORITMO ROUND-ROBIN (Ida y Vuelta)
     let equiposRotatorios = [...equipos];
     const equipoFijo = equiposRotatorios.shift(); 
 
@@ -584,6 +676,7 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       for (let i = 0; i < partidosPorJornada - 1; i++) {
         calendario.push({ jornada, local: equiposRotatorios[i], visitante: equiposRotatorios[equiposRotatorios.length - 2 - i] });
       }
+      // Rotamos los equipos (El último pasa a ser el primero del array rotatorio)
       equiposRotatorios.unshift(equiposRotatorios.pop());
     }
 
@@ -592,12 +685,12 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       const jornadaVuelta = jornada + totalJornadasIda;
       const partidosIda = calendario.filter(p => p.jornada === jornada);
       for (const p of partidosIda) {
-        calendario.push({ jornada: jornadaVuelta, local: p.visitante, visitante: p.local });
+        calendario.push({ jornada: jornadaVuelta, local: p.visitante, visitante: p.local }); // Invertimos Local y Visitante
       }
     }
 
     // =======================================================
-    // 4. EL REPARTO TELEVISIVO (Fechas, Horas y Descansos)
+    // 6. EL REPARTO TELEVISIVO (Fechas, Horas y Descansos)
     // =======================================================
     
     // Empieza exactamente en 1 semana (7 días)
@@ -605,15 +698,9 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
     currentDate.setDate(currentDate.getDate() + 7); 
     currentDate.setHours(0, 0, 0, 0);
 
-    const timeSlots = [
-      { h: 10, m: 0 }, // Mañana
-      { h: 13, m: 0 }, // Mediodía
-      { h: 17, m: 0 }, // Tarde
-      { h: 20, m: 0 }  // Noche
-    ];
+    const timeSlots = [ { h: 10, m: 0 }, { h: 13, m: 0 }, { h: 17, m: 0 }, { h: 20, m: 0 } ];
 
-    // Función para barajar los horarios al azar
-    function shuffle(array) {
+    function shuffleSlots(array) {
       for (let i = array.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
         [array[i], array[j]] = [array[j], array[i]];
@@ -624,27 +711,27 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
     const totalJornadas = totalJornadasIda * 2;
 
     for (let jornada = 1; jornada <= totalJornadas; jornada++) {
-      // Filtramos los partidos reales de esta jornada (ignoramos si alguien "Descansa")
+      // Ignoramos los partidos donde alguien descansa
       let partidosJornada = calendario.filter(p => p.jornada === jornada && p.local !== 'DESCANSA' && p.visitante !== 'DESCANSA');
       
-      // Reparto de los 10 partidos en 3 días: 3 el Día 1, 3 el Día 2, 4 el Día 3
-      const distribucion = [3, 3, 4];
+      // Reparto de 10 partidos en 3 días (si hay 20 equipos)
+      const distribucion = [3, 3, 4]; 
       let partidoIndex = 0;
 
       for (let dayOffset = 0; dayOffset < 3; dayOffset++) {
         const partidosHoy = distribucion[dayOffset];
-        
-        // Cogemos horarios al azar (si hoy hay 3 partidos, coge 3 horarios distintos)
-        const slotsHoy = shuffle([...timeSlots]).slice(0, partidosHoy);
+        const slotsHoy = shuffleSlots([...timeSlots]).slice(0, partidosHoy);
         
         for (let i = 0; i < partidosHoy; i++) {
           if (partidoIndex < partidosJornada.length) {
             const partido = partidosJornada[partidoIndex];
             
-            // Asignamos el día (+0, +1 o +2 días desde el inicio de la jornada) y la hora
             const fechaPartido = new Date(currentDate);
             fechaPartido.setDate(fechaPartido.getDate() + dayOffset);
-            fechaPartido.setHours(slotsHoy[i].h, slotsHoy[i].m, 0, 0);
+            
+            // Asignamos el horario al azar usando el módulo para no quedarnos sin slots
+            const slotAsignado = slotsHoy[i % slotsHoy.length];
+            fechaPartido.setHours(slotAsignado.h, slotAsignado.m, 0, 0); 
 
             await db.query(`
               INSERT INTO partidos (id_liga, jornada, equipo_local, equipo_visitante, fecha_partido, estado)
@@ -655,20 +742,17 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
           }
         }
       }
-
-      // Los partidos se han jugado en el Día 1, Día 2 y Día 3.
-      // Añadimos exactamente 2 días de descanso (Día 4 y Día 5 sin fútbol).
-      // Por tanto, la siguiente jornada empezará exactamente 5 días después.
+      // Sumamos 5 días para la siguiente jornada
       currentDate.setDate(currentDate.getDate() + 5); 
     }
 
     await db.query('COMMIT');
-    res.json({ message: '¡Calendario generado! Pretemporada de 7 días iniciada. 📅⚽' });
+    res.json({ message: '¡Liga generada! Dinero y plantillas repartidas con éxito. 📅⚽' });
 
   } catch (err) {
     await db.query('ROLLBACK');
     console.error("Error generando calendario:", err);
-    res.status(400).json({ message: err.message || 'Error al generar el calendario' });
+    res.status(400).json({ message: err.message || 'Error al configurar y generar la liga' });
   }
 });
 
