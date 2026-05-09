@@ -599,13 +599,27 @@ router.put('/:id_liga/plantilla', verifyToken, async (req, res) => {
 router.get('/:id_liga/jugadores-rival/:id_user', verifyToken, async (req, res) => {
   const { id_liga, id_user } = req.params;
   try {
-    const result = await db.query(`
+    // 1. Buscamos primero quién es el rival para sacar su nombre y avatar
+    const rivalRes = await db.query('SELECT username, avatar FROM users WHERE id = $1', [id_user]);
+    
+    if (rivalRes.rows.length === 0) {
+      return res.status(404).json({ message: 'Rival no encontrado' });
+    }
+
+    // 2. Buscamos a sus jugadores
+    const jugRes = await db.query(`
       SELECT f.*, ful.es_titular, ful.hueco_plantilla, ful.en_venta, ful.precio_venta
       FROM futbolista_user_liga ful 
       JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
       WHERE ful.id_liga = $1 AND ful.id_user = $2
     `, [id_liga, id_user]);
-    res.json(result.rows);
+
+    // 3. Empaquetamos todo exactamente como tu Frontend (plantilla-rival.ts) lo espera
+    res.json({
+      rival: rivalRes.rows[0],
+      jugadores: jugRes.rows
+    });
+    
   } catch (err) {
     res.status(500).json({ message: 'Error obteniendo jugadores del rival' });
   }
