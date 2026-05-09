@@ -417,41 +417,61 @@ router.put('/:id_liga/plantilla', verifyToken, async (req, res) => {
   }
 });
 
-// Obtener los jugadores y datos de un rival
-router.get('/:id_liga/jugadores-rival/:id_usuario_rival', verifyToken, async (req, res) => {
-  const { id_liga, id_usuario_rival } = req.params;
+// Guardar la alineación de un usuario en una liga
+router.put('/:id_liga/plantilla', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const idUser = req.user.id;
+  const { formacion, titulares } = req.body; 
 
   try {
-    const rivalRes = await db.query('SELECT username, avatar FROM users WHERE id = $1', [id_usuario_rival]);
-    const rivalInfo = rivalRes.rows[0];
+    await db.query('BEGIN'); 
 
-    const result = await db.query(`
-      SELECT 
-        f.id_futbolista, f.nombre, f.posicion, f.precio, f.equipo, f.media,
-        f.imagen, f.ataque, f.defensa, f.parada, f.pase,
-        f.tipo_carta, f.codigo_habilidad, f.descripcion, -- <--- NUEVOS CAMPOS
-        ful.en_venta, ful.precio_venta
-      FROM futbolista_user_liga ful
-      JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
-      WHERE ful.id_liga = $1 AND ful.id_user = $2
-      ORDER BY 
-        CASE 
-          WHEN f.posicion = 'PT' THEN 1
-          WHEN f.posicion = 'DF' THEN 2
-          WHEN f.posicion = 'MC' THEN 3
-          WHEN f.posicion = 'DL' THEN 4
-          ELSE 5
-        END
-    `, [id_liga, id_usuario_rival]);
+    // 1. Actualizar la formación preferida del usuario en esta liga
+    if (formacion) {
+      await db.query(
+        'UPDATE users_liga SET formacion = $1 WHERE id_user = $2 AND id_liga = $3',
+        [formacion, idUser, id_liga]
+      );
+    }
 
-    res.json({
-      rival: rivalInfo,
-      jugadores: result.rows
-    });
+    // 2. Mandar a TODOS los jugadores al banquillo y limpiar su hueco
+    await db.query(
+      'UPDATE futbolista_user_liga SET es_titular = false, hueco_plantilla = NULL WHERE id_user = $1 AND id_liga = $2',
+      [idUser, id_liga]
+    );
 
+    // 3. Ascender a titulares a los que estén en el césped en su hueco específico
+    if (titulares && titulares.length > 0) {
+      for (const tit of titulares) {
+        
+        // --- SEGURIDAD ANTI-HACKERS PARA EL JUGADOR 12 ---
+        if (tit.hueco === 'hueco-12') {
+          const checkUltra = await db.query(
+            'SELECT tipo_carta FROM futbolistas WHERE id_futbolista = $1',
+            [tit.id]
+          );
+          
+          if (checkUltra.rows.length === 0 || checkUltra.rows[0].tipo_carta !== 'ultra') {
+            throw new Error('Manipulación detectada: El pedestal del Jugador 12 solo admite leyendas ULTRA.');
+          }
+        }
+        // -------------------------------------------------
+
+        await db.query(
+          'UPDATE futbolista_user_liga SET es_titular = true, hueco_plantilla = $1 WHERE id_user = $2 AND id_liga = $3 AND id_futbolista = $4',
+          [tit.hueco, idUser, id_liga, tit.id]
+        );
+      }
+    }
+
+    await db.query('COMMIT');
+    res.json({ message: '¡Plantilla guardada con éxito!' });
+    
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error obteniendo jugadores del rival' });
+    await db.query('ROLLBACK');
+    console.error("Error guardando plantilla:", err);
+    // Devolvemos el mensaje de error específico si alguien intentó la trampa
+    res.status(500).json({ message: err.message || 'Error al guardar la alineación' });
   }
 });
 
@@ -1505,7 +1525,7 @@ app.get('/api/cron/medianoche', async (req, res) => {
           id_liga, 
           idPresidente, 
           idVendedor,
-          `El mercado ha cerrado y nadie ha pujado por él. El sistema ha comprado a tu jugador ${nombreJugadorVendido} por el 80% de su valor base (${valorVentaSistema} Tc). El dinero ya ha sido ingresado en tu cuenta.`
+          `El mercado ha cerrado y nadie ha pujado por él. El sistema ha comprado a tu jugador ${nombreJugadorVendido} por el 80% de su valor base (${valorVentaSistema} Tc). El dinero ya ha sido ingresado en tu cuenta y el jugador vuelve a estar en los sobres.`
         ]);
       }
 
@@ -1514,14 +1534,14 @@ app.get('/api/cron/medianoche', async (req, res) => {
       await db.query('DELETE FROM mercado_liga WHERE id_liga = $1', [id_liga]);
 
       // 5. Generar los 20 NUEVOS jugadores asegurando 3 de cada posición
-      // MODIFICACIÓN: Se añade el filtro de equipo != 'Real Trébol FC'
       const nuevosJugadores = await db.query(`
         WITH Disponibles AS (
           SELECT id_futbolista, TRIM(UPPER(posicion)) as pos_limpia,
                  ROW_NUMBER() OVER(PARTITION BY TRIM(UPPER(posicion)) ORDER BY RANDOM()) as rn,
                  RANDOM() as rnd
           FROM futbolistas 
-          WHERE equipo != 'Real Trébol FC' -- <--- LOS DIOSES NO VAN AL MERCADO
+          WHERE equipo != 'Real Trébol FC' 
+            AND tipo_carta = 'normal' -- <--- ¡FIX! Solo jugadores normales al mercado
             AND id_futbolista NOT IN (
             SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $1
           )
@@ -1547,210 +1567,275 @@ app.get('/api/cron/medianoche', async (req, res) => {
   }
 });
 
+// ==========================================
+// 🧠 CEREBRO DE LA IA: ESTILOS DE JUEGO Y FORMACIONES
+// ==========================================
+const CONFIG_EQUIPOS_IA = {
+  'Real Pinar FC': { formacion: '4-3-3' }, 'Neón City FC': { formacion: '4-3-3' },
+  'Pixel United': { formacion: '4-3-3' }, 'CF Átomo': { formacion: '4-3-3' },
+  'Club Náutico Brisamar': { formacion: '4-4-2' }, 'Racing Vaguadas': { formacion: '4-4-2' },
+  'UD Recreo': { formacion: '4-4-2' }, 'Alianza Metropolitana': { formacion: '4-4-2' },
+  'Deportivo Relámpago': { formacion: '3-5-2' }, 'Gourmet FC': { formacion: '3-5-2' },
+  'Cosmos United': { formacion: '3-5-2' }, 'Motor Club Chacón': { formacion: '3-4-3' },
+  'Dragones de Oriente': { formacion: '3-4-3' }, 'Real Trébol FC': { formacion: '3-4-3' },
+  'Athletic Hullera': { formacion: '5-4-1' }, 'CD Refugio': { formacion: '5-4-1' },
+  'Unión Fortaleza': { formacion: '5-4-1' }, 'CD Frontera': { formacion: '5-3-2' },
+  'Sporting Lechuza': { formacion: '5-3-2' }, 'Titanes CF': { formacion: '5-3-2' },
+  'Pangea FC': { formacion: '5-3-2' }
+};
+
+const REQ_FORMACION = {
+  '4-3-3': { PT: 1, DF: 4, MC: 3, DL: 3 }, '4-4-2': { PT: 1, DF: 4, MC: 4, DL: 2 },
+  '3-5-2': { PT: 1, DF: 3, MC: 5, DL: 2 }, '3-4-3': { PT: 1, DF: 3, MC: 4, DL: 3 },
+  '5-4-1': { PT: 1, DF: 5, MC: 4, DL: 1 }, '5-3-2': { PT: 1, DF: 5, MC: 3, DL: 2 }
+};
+
 // =================================================================
-// 🎮 CRON JOB: MOTOR DE SIMULACIÓN DE PARTIDOS (Cada hora)
+// 🎮 CRON JOB: MOTOR DE SIMULACIÓN DE PARTIDOS V3 (70 MINUTOS + MAGIA)
 // =================================================================
 app.get('/api/cron/simular-partidos', async (req, res) => {
-  
-  // 1. Seguridad de Vercel
   const authHeader = req.headers.authorization;
-  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-    return res.status(401).json({ error: 'No autorizado' });
-  }
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ error: 'No autorizado' });
 
   try {
-    console.log("Iniciando simulación de partidos pendientes...");
-    
-    // 2. Buscar partidos que estén 'pendientes' y su fecha ya haya pasado
-    const partidosRes = await db.query(`
-      SELECT * FROM partidos 
-      WHERE estado = 'pendiente' AND fecha_partido <= NOW()
-    `);
+    const partidosRes = await db.query(`SELECT * FROM partidos WHERE estado = 'pendiente' AND fecha_partido <= NOW()`);
+    if (partidosRes.rows.length === 0) return res.json({ message: 'No hay partidos pendientes.' });
 
-    if (partidosRes.rows.length === 0) {
-      return res.json({ message: 'No hay partidos pendientes para simular ahora mismo.' });
-    }
+    // Restamos 1 partido de sanción y lesión a TODOS los jugadores de la base de datos
+    await db.query(`UPDATE futbolistas SET partidos_sancion = GREATEST(0, partidos_sancion - 1), partidos_lesion = GREATEST(0, partidos_lesion - 1)`);
 
-    // 3. Simular partido a partido
     for (const partido of partidosRes.rows) {
-      await db.query('BEGIN'); // Transacción por partido por seguridad
+      await db.query('BEGIN');
       
-      console.log(`Simulando: ${partido.equipo_local} vs ${partido.equipo_visitante}`);
+      // 1. Cargar disponibles (Ni lesionados, ni sancionados)
+      const jugRes = await db.query(`SELECT * FROM futbolistas WHERE equipo IN ($1, $2) AND partidos_lesion = 0 AND partidos_sancion = 0`, [partido.equipo_local, partido.equipo_visitante]);
 
-      // A) Cargar los jugadores de ambos clubes
-      const jugadoresRes = await db.query(`
-        SELECT * FROM futbolistas WHERE equipo IN ($1, $2)
-      `, [partido.equipo_local, partido.equipo_visitante]);
-      
-      const localTeam = jugadoresRes.rows.filter(j => j.equipo === partido.equipo_local);
-      const visitTeam = jugadoresRes.rows.filter(j => j.equipo === partido.equipo_visitante);
-
-      // B) Variables del partido
-      let golesLocal = 0;
-      let golesVisit = 0;
-      let eventos = [];
-      let statsPartido = {}; // Para guardar lo que hace cada jugador
-
-      // Inicializar stats en 0 para todos los jugadores
-      jugadoresRes.rows.forEach(j => {
-        statsPartido[j.id_futbolista] = {
-          id: j.id_futbolista, equipo: j.equipo, posicion: j.posicion,
-          goles: 0, asistencias: 0, amarillas: 0, rojas: 0, propia: 0,
-          nota_base: (Math.random() * (7.5 - 4.0) + 4.0).toFixed(1) // Nota aleatoria entre 4.0 y 7.5
-        };
-      });
-
-      // C) EL BUCLE DE 60 MINUTOS
-      for (let minuto = 1; minuto <= 60; minuto++) {
+      const armarEquipo = (nombreEquipo) => {
+        const plantilla = jugRes.rows.filter(j => j.equipo === nombreEquipo).sort((a, b) => ((b.media * 0.7) + (b.forma_actual * 3)) - ((a.media * 0.7) + (a.forma_actual * 3)));
+        const formacion = CONFIG_EQUIPOS_IA[nombreEquipo]?.formacion || '4-4-2';
+        const reqs = { ...REQ_FORMACION[formacion] };
         
-        // --- 1. ¿HAY GOL? (Aprox 5% de probabilidad por minuto) ---
-        if (Math.random() < 0.05) {
-          const atacaLocal = Math.random() < 0.55; // Pequeña ventaja al local (55%)
-          const equipoAtacante = atacaLocal ? localTeam : visitTeam;
-          const equipoDefensor = atacaLocal ? visitTeam : localTeam;
-          
-          // Elegir goleador (Más probabilidad a Delanteros y Medios)
-          const posiblesGoleadores = equipoAtacante.filter(j => j.posicion === 'DL' || j.posicion === 'MC');
-          const goleador = posiblesGoleadores.length > 0 
-            ? posiblesGoleadores[Math.floor(Math.random() * posiblesGoleadores.length)]
-            : equipoAtacante[0];
+        let titulares = []; let banquillo = []; let onPitch = { PT: 0, DF: 0, MC: 0, DL: 0 };
+        plantilla.forEach(j => {
+          let pos = j.posicion.trim().toUpperCase();
+          if (pos.includes('DEL')) pos = 'DL'; if (pos.includes('DEF')) pos = 'DF'; if (pos.includes('POR')) pos = 'PT';
+          if (onPitch[pos] < reqs[pos]) { titulares.push(j); onPitch[pos]++; } else if (banquillo.length < 7) { banquillo.push(j); }
+        });
+        return { titulares, banquillo, cambiosHechos: 0, rojas: 0, nombre: nombreEquipo };
+      };
 
-          // Elegir si hay asistencia (40% probabilidad)
-          let asistente = null;
-          if (Math.random() < 0.40) {
-            const posiblesAsistentes = equipoAtacante.filter(j => j.id_futbolista !== goleador.id_futbolista);
-            asistente = posiblesAsistentes[Math.floor(Math.random() * posiblesAsistentes.length)];
-            statsPartido[asistente.id_futbolista].asistencias++;
+      let local = armarEquipo(partido.equipo_local);
+      let visit = armarEquipo(partido.equipo_visitante);
+      let golesLocal = 0, golesVisit = 0, eventos = [], statsPartido = {}, partidoSuspendido = false;
+
+      // JSON de Alineaciones para mostrar luego en el Frontend
+      const alineacionGuardada = {
+        local: { equipo: local.nombre, titulares: local.titulares.map(t=>t.id_futbolista), banquillo: local.banquillo.map(b=>b.id_futbolista) },
+        visitante: { equipo: visit.nombre, titulares: visit.titulares.map(t=>t.id_futbolista), banquillo: visit.banquillo.map(b=>b.id_futbolista) }
+      };
+
+      [...local.titulares, ...local.banquillo, ...visit.titulares, ...visit.banquillo].forEach(j => {
+        statsPartido[j.id_futbolista] = { ...j, jugo: false, goles: 0, asistencias: 0, amarillas: 0, rojas: 0, nota_final: null };
+      });
+      local.titulares.forEach(j => statsPartido[j.id_futbolista].jugo = true);
+      visit.titulares.forEach(j => statsPartido[j.id_futbolista].jugo = true);
+
+      // --- 2. EL PARTIDO (70 MINS: 60 JUEGO + 10 DESCANSO) ---
+      for (let minuto = 1; minuto <= 70; minuto++) {
+        if (partidoSuspendido) break;
+
+        // DESCANSO (Minutos 31 al 40)
+        if (minuto > 30 && minuto <= 40) {
+          if (minuto === 31) {
+            eventos.push({ minuto: 30, tipo_evento: 'info', id_futbolista: null, descripcion: '⏱️ Final de la primera parte. Los jugadores se van al vestuario.' });
+            [local, visit].forEach(equipo => {
+              if (equipo.banquillo.length > 0 && equipo.cambiosHechos < 5 && Math.random() > 0.2) {
+                const sale = equipo.titulares[Math.floor(Math.random() * equipo.titulares.length)];
+                const entra = equipo.banquillo.shift();
+                equipo.titulares = equipo.titulares.filter(j => j.id_futbolista !== sale.id_futbolista);
+                equipo.titulares.push(entra);
+                statsPartido[entra.id_futbolista].jugo = true;
+                equipo.cambiosHechos++;
+                eventos.push({ minuto: 'HT', tipo_evento: 'cambio', id_futbolista: entra.id_futbolista, descripcion: `🔄 Cambio táctico al descanso: Entra ${entra.nombre}, sale ${sale.nombre}.` });
+              }
+            });
           }
-
-          // Guardar gol
-          statsPartido[goleador.id_futbolista].goles++;
-          statsPartido[goleador.id_futbolista].nota_base = Math.min(10, parseFloat(statsPartido[goleador.id_futbolista].nota_base) + 1.5).toFixed(1); // Subir nota
-          
-          if (atacaLocal) golesLocal++; else golesVisit++;
-
-          // Generar evento
-          eventos.push({
-            minuto, tipo_evento: 'gol', id_futbolista: goleador.id_futbolista,
-            id_asistente: asistente ? asistente.id_futbolista : null,
-            descripcion: `¡GOOOOOL de ${goleador.nombre}! ${asistente ? 'Gran pase de ' + asistente.nombre : 'Jugada individual increíble'}.`
-          });
+          if (minuto === 40) eventos.push({ minuto: 41, tipo_evento: 'info', id_futbolista: null, descripcion: '⚽ Arranca la segunda mitad.' });
+          continue; 
         }
 
-        // --- 2. ¿HAY TARJETA AMARILLA? (3% por minuto) ---
-        if (Math.random() < 0.03) {
-          const jugadorMalo = jugadoresRes.rows[Math.floor(Math.random() * jugadoresRes.rows.length)];
-          // Solo si no tiene roja ya
-          if (statsPartido[jugadorMalo.id_futbolista].rojas === 0) {
-            statsPartido[jugadorMalo.id_futbolista].amarillas++;
-            
-            // Si es la segunda amarilla, es roja
-            if (statsPartido[jugadorMalo.id_futbolista].amarillas === 2) {
-              statsPartido[jugadorMalo.id_futbolista].rojas = 1;
-              statsPartido[jugadorMalo.id_futbolista].nota_base = Math.max(0, parseFloat(statsPartido[jugadorMalo.id_futbolista].nota_base) - 2.0).toFixed(1);
-              eventos.push({ minuto, tipo_evento: 'roja', id_futbolista: jugadorMalo.id_futbolista, id_asistente: null, descripcion: `¡SEGUNDA AMARILLA! ${jugadorMalo.nombre} es expulsado del partido.` });
+        const minReal = minuto > 40 ? minuto - 10 : minuto;
+
+        // GOLES
+        if (Math.random() < 0.06) {
+          const atacaLocal = Math.random() < 0.5;
+          const atacante = atacaLocal ? local : visit;
+          if (atacante.titulares.length > 0) {
+            const goleador = atacante.titulares[Math.floor(Math.random() * atacante.titulares.length)];
+            let asistente = null;
+            if (Math.random() < 0.5 && atacante.titulares.length > 1) {
+              asistente = atacante.titulares.filter(j => j.id_futbolista !== goleador.id_futbolista)[0];
+              statsPartido[asistente.id_futbolista].asistencias++;
+            }
+            statsPartido[goleador.id_futbolista].goles++;
+            if (atacaLocal) golesLocal++; else golesVisit++;
+            eventos.push({ minuto: minReal, tipo_evento: 'gol', id_futbolista: goleador.id_futbolista, descripcion: `¡GOOOOL de ${goleador.nombre}!` });
+          }
+        }
+
+        // LESIONES (1% chance)
+        if (Math.random() < 0.01) {
+          const sufreLesion = Math.random() < 0.5 ? local : visit;
+          if (sufreLesion.titulares.length > 0) {
+            const lesionado = sufreLesion.titulares[Math.floor(Math.random() * sufreLesion.titulares.length)];
+            sufreLesion.titulares = sufreLesion.titulares.filter(j => j.id_futbolista !== lesionado.id_futbolista);
+            const tirada = Math.random();
+            let dias = 1, tipo = 'Sobrecarga muscular';
+            if (tirada > 0.9) { dias = 14; tipo = 'Rotura de ligamentos'; } else if (tirada > 0.7) { dias = 7; tipo = 'Rotura fibrilar'; } else if (tirada > 0.4) { dias = 3; tipo = 'Esguince de tobillo'; }
+            statsPartido[lesionado.id_futbolista].lesion_sufrida = { dias, tipo };
+            let desc = `🚑 ¡LESIÓN! ${lesionado.nombre} se retira en camilla (${tipo}).`;
+            if (sufreLesion.banquillo.length > 0) {
+              const entra = sufreLesion.banquillo.shift();
+              sufreLesion.titulares.push(entra);
+              statsPartido[entra.id_futbolista].jugo = true;
+              desc += ` Entra ${entra.nombre}.`;
+            } else { desc += ` ¡Se quedan con 10!`; }
+            eventos.push({ minuto: minReal, tipo_evento: 'lesion', id_futbolista: lesionado.id_futbolista, descripcion: desc });
+          }
+        }
+
+        // TARJETAS
+        if (Math.random() < 0.04) {
+          const equipoFalta = Math.random() < 0.5 ? local : visit;
+          if (equipoFalta.titulares.length > 0) {
+            const infractor = equipoFalta.titulares[Math.floor(Math.random() * equipoFalta.titulares.length)];
+            statsPartido[infractor.id_futbolista].amarillas++;
+            if (statsPartido[infractor.id_futbolista].amarillas === 2 || Math.random() < 0.1) {
+              statsPartido[infractor.id_futbolista].rojas = 1;
+              equipoFalta.titulares = equipoFalta.titulares.filter(j => j.id_futbolista !== infractor.id_futbolista);
+              equipoFalta.rojas++;
+              eventos.push({ minuto: minReal, tipo_evento: 'roja', id_futbolista: infractor.id_futbolista, descripcion: `🟥 ROJA DIRECTA a ${infractor.nombre}.` });
+              if (equipoFalta.rojas >= 3) {
+                partidoSuspendido = true;
+                if (equipoFalta === local) { golesLocal = 0; golesVisit = 3; } else { golesLocal = 3; golesVisit = 0; }
+                eventos.push({ minuto: minReal, tipo_evento: 'info', descripcion: `⚖️ FORFAIT. Suspendido por falta de jugadores. Derrota 3-0.` });
+              }
             } else {
-              eventos.push({ minuto, tipo_evento: 'amarilla', id_futbolista: jugadorMalo.id_futbolista, id_asistente: null, descripcion: `Tarjeta amarilla para ${jugadorMalo.nombre} por una dura entrada.` });
+              eventos.push({ minuto: minReal, tipo_evento: 'amarilla', id_futbolista: infractor.id_futbolista, descripcion: `🟨 Amarilla para ${infractor.nombre}.` });
             }
           }
         }
       }
 
-      // D) CALCULAR PUNTOS FANTASY Y MVP AL TERMINAR EL PARTIDO
-      let maxPuntos = -100;
-      let idMVP = null;
-
+      // --- 3. POST-PARTIDO: Notas y Fluctuaciones ---
       for (let id in statsPartido) {
         let st = statsPartido[id];
-        let puntos = 0;
+        if (!st.jugo) continue;
+        let nota = (Math.random() * 5.0) + 2.0; 
+        nota += (st.goles * 2.0) + (st.asistencias * 1.5);
+        if (st.rojas > 0) nota = 1.0; else if (st.amarillas > 0) nota -= 1.0;
+        if (st.equipo === partido.equipo_local && golesVisit === 0 && (st.posicion === 'DF' || st.posicion === 'PT')) nota += 1.5;
+        if (st.equipo === partido.equipo_visitante && golesLocal === 0 && (st.posicion === 'DF' || st.posicion === 'PT')) nota += 1.5;
+        st.nota_final = Math.max(0, Math.min(10, nota)).toFixed(1);
 
-        // Puntos base por la nota generada (aprox de 0 a 10 puntos)
-        puntos += Math.round(parseFloat(st.nota_base));
+        if (st.lesion_sufrida) await db.query(`UPDATE futbolistas SET estado_lesion = $1, partidos_lesion = $2 WHERE id_futbolista = $3`, [st.lesion_sufrida.tipo, st.lesion_sufrida.dias, st.id_futbolista]);
+        if (st.rojas > 0) await db.query(`UPDATE futbolistas SET partidos_sancion = $1 WHERE id_futbolista = $2`, [Math.floor(Math.random() * 4) + 1, st.id_futbolista]);
 
-        // Sumas y restas de la Trebol League
-        puntos += (st.goles * 5);
-        puntos += (st.asistencias * 3);
-        puntos += (st.amarillas === 1 ? -2 : 0); // Si es 2 amarillas cuenta como roja
-        puntos += (st.rojas * -5);
-        puntos += (st.propia * -3);
-
-        // Bonus Portería a cero
-        if (st.equipo === partido.equipo_local && golesVisit === 0) {
-          if (st.posicion === 'PT') puntos += 4;
-          if (st.posicion === 'DF') puntos += 2;
-        } else if (st.equipo === partido.equipo_visitante && golesLocal === 0) {
-          if (st.posicion === 'PT') puntos += 4;
-          if (st.posicion === 'DF') puntos += 2;
-        }
-
-        st.puntos_totales = puntos;
-
-        // Buscar al MVP
-        if (puntos > maxPuntos) {
-          maxPuntos = puntos;
-          idMVP = st.id;
+        // Subidas y bajadas solo para no-ultras
+        if (st.tipo_carta !== 'ultra') {
+          let nuevaMedia = st.media;
+          if (st.nota_final > 7.5 && Math.random() < ((100 - st.media) / 100)) nuevaMedia = Math.min(94, nuevaMedia + 1);
+          if (st.nota_final < 4.0 && Math.random() < 0.3) nuevaMedia = Math.max(60, nuevaMedia - 1);
+          let nuevoPrecio = Math.min(50000000, Math.max(1000000, Math.floor(Math.pow(1.15, nuevaMedia - 60) * 1000000)));
+          await db.query(`UPDATE futbolistas SET forma_actual = $1, media = $2, precio = $3 WHERE id_futbolista = $4`, [st.nota_final, nuevaMedia, nuevoPrecio, st.id_futbolista]);
+        } else {
+          await db.query(`UPDATE futbolistas SET forma_actual = $1 WHERE id_futbolista = $2`, [st.nota_final, st.id_futbolista]);
         }
       }
 
-      // Dar bonus al MVP
-      if (idMVP) {
-        statsPartido[idMVP].puntos_totales += 2;
-        statsPartido[idMVP].mvp = true;
-      }
-
-      // E) GUARDAR TODO EN LA BASE DE DATOS
-      
-      // 1. Actualizar el marcador del partido
-      await db.query(`
-        UPDATE partidos SET goles_local = $1, goles_visitante = $2, estado = 'finalizado' WHERE id_partido = $3
-      `, [golesLocal, golesVisit, partido.id_partido]);
-
-      // 2. Guardar los eventos (El minuto a minuto)
+      await db.query(`UPDATE partidos SET goles_local = $1, goles_visitante = $2, estado = 'finalizado', alineaciones = $4 WHERE id_partido = $3`, [golesLocal, golesVisit, partido.id_partido, JSON.stringify(alineacionGuardada)]);
       for (const ev of eventos) {
-        await db.query(`
-          INSERT INTO eventos_partido (id_partido, minuto, tipo_evento, id_futbolista, id_asistente, descripcion)
-          VALUES ($1, $2, $3, $4, $5, $6)
-        `, [partido.id_partido, ev.minuto, ev.tipo_evento, ev.id_futbolista, ev.id_asistente, ev.descripcion]);
+        await db.query(`INSERT INTO eventos_partido (id_partido, minuto, tipo_evento, id_futbolista, id_asistente, descripcion) VALUES ($1, $2, $3, $4, $5, $6)`, [partido.id_partido, ev.minuto, ev.tipo_evento, ev.id_futbolista, ev.id_asistente, ev.descripcion]);
       }
 
-      // 3. Buscar qué Mánagers alinearon a estos jugadores (es_titular = true) y darles los puntos
-      const titularesRes = await db.query(`
-        SELECT id_user, id_futbolista FROM futbolista_user_liga 
-        WHERE id_liga = (SELECT id_liga FROM partidos WHERE id_partido = $1) AND es_titular = true
-      `, [partido.id_partido]);
+      // --- 4. PUNTOS FANTASY + MAGIA HABILIDADES ---
+      const mánagers = await db.query(`SELECT DISTINCT id_user FROM users_liga WHERE id_liga = $1`, [partido.id_liga]);
+      for (const man of mánagers.rows) {
+        const suPlantilla = await db.query(`SELECT ful.*, f.codigo_habilidad FROM futbolista_user_liga ful JOIN futbolistas f ON ful.id_futbolista = f.id_futbolista WHERE ful.id_user = $1 AND ful.id_liga = $2 AND ful.es_titular = true`, [man.id_user, partido.id_liga]);
+        let puntosTotalesManager = 0;
 
-      for (const titular of titularesRes.rows) {
-        const statsJugador = statsPartido[titular.id_futbolista];
-        
-        // Si el jugador participó en este partido (pertenece a uno de los dos clubes)
-        if (statsJugador) {
-          // Guardar el rendimiento individual
-          await db.query(`
-            INSERT INTO rendimiento_partido 
-            (id_partido, id_futbolista, id_user, nota_base, puntos_totales, goles, asistencias, amarillas, rojas, goles_propia, mvp)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-          `, [
-            partido.id_partido, statsJugador.id, titular.id_user, statsJugador.nota_base, statsJugador.puntos_totales,
-            statsJugador.goles, statsJugador.asistencias, statsJugador.amarillas, statsJugador.rojas, statsJugador.propia, !!statsJugador.mvp
-          ]);
+        const jugador12 = suPlantilla.rows.find(j => j.hueco_plantilla === 'hueco-12');
+        const ultraCode = jugador12 ? jugador12.codigo_habilidad : null;
+        let espejismoActivo = suPlantilla.rows.some(j => j.codigo_habilidad === 'HabEspecial_Espejismo' && j.hueco_plantilla !== 'hueco-12') && (Math.random() < 0.10);
+        let bonusLider = suPlantilla.rows.filter(j => j.codigo_habilidad === 'HabEspecial_LiderEspiritual' && j.hueco_plantilla !== 'hueco-12').length;
+        let primeraRojaPerdonada = false;
 
-          // SUMAR LOS PUNTOS A LA CLASIFICACIÓN DEL MÁNAGER
-          await db.query(`
-            UPDATE users_liga SET puntos = puntos + $1 WHERE id_user = $2 AND id_liga = $3
-          `, [statsJugador.puntos_totales, titular.id_user, partido.id_liga]);
+        for (const mio of suPlantilla.rows) {
+          if (mio.hueco_plantilla === 'hueco-12') continue;
+          const st = statsPartido[mio.id_futbolista];
+          if (st && st.jugo) {
+            const hab = mio.codigo_habilidad;
+            let misPuntos = Math.round(parseFloat(st.nota_final));
+            let multGoles = hab === 'HabEspecial_Francotirador' ? 10 : 5;
+            
+            if (st.rojas > 0) {
+                if (ultraCode === 'HabUltra_Wade' && !primeraRojaPerdonada) { primeraRojaPerdonada = true; } else if (hab !== 'HabEspecial_JuegoCaballeros') { misPuntos -= 5; }
+            } else if (st.amarillas > 0 && hab !== 'HabEspecial_JuegoCaballeros') { misPuntos -= 2; }
+
+            misPuntos += (st.goles * multGoles) + (st.asistencias * 3);
+            const isLocal = st.equipo === partido.equipo_local;
+            const golesEquipo = isLocal ? golesLocal : golesVisit;
+            const golesRival = isLocal ? golesVisit : golesLocal;
+            const win = golesEquipo > golesRival;
+            const loss = golesEquipo < golesRival;
+
+            // Habilidades Especiales
+            if (hab === 'HabEspecial_Egoista' && st.goles > 0 && st.goles === golesEquipo) misPuntos += 10;
+            if (hab === 'HabEspecial_EfectoBolaNieve') misPuntos += golesEquipo;
+            if (hab === 'HabEspecial_HeroeAgonico' && win && eventos.some(e => e.id_futbolista === mio.id_futbolista && e.minuto >= 50 && e.tipo_evento === 'gol')) misPuntos += 8;
+            if (hab === 'HabEspecial_CerrojoAbsoluto' && golesRival === 0) misPuntos = Math.round(misPuntos * 1.5);
+            if (hab === 'HabEspecial_SalvadorAlambre' && win && (golesEquipo - golesRival === 1)) misPuntos += 7;
+            if (hab === 'HabEspecial_TodoONada') { misPuntos = win ? misPuntos * 2 : 0; }
+            if (hab === 'HabEspecial_DadoDelCaos') misPuntos += (Math.random() > 0.5 ? 10 : -5);
+            if (hab === 'HabEspecial_ImanFaltas') misPuntos += Math.floor(Math.random() * 5) + 1;
+            if (hab === 'HabEspecial_Trotamundos' && !isLocal) misPuntos += 3;
+            if (hab === 'HabEspecial_AnclaLocal' && isLocal) misPuntos += 4;
+            if (hab === 'HabEspecial_OrgulloCaido' && loss && (golesRival - golesEquipo >= 3) && misPuntos < 2) misPuntos = 2;
+
+            misPuntos += bonusLider;
+            if (espejismoActivo) misPuntos *= 2;
+
+            // Habilidades Ultra (Jugador 12)
+            if (ultraCode === 'HabUltra_Trebolin' && (st.posicion === 'DF' || st.posicion === 'PT')) misPuntos = Math.round(misPuntos * 1.20);
+            if (ultraCode === 'HabUltra_Wade') misPuntos = Math.round(misPuntos * 1.10);
+            if (ultraCode === 'HabUltra_Cuestarriba' && (st.posicion === 'DF' || st.posicion === 'MC')) misPuntos += 3;
+            if (ultraCode === 'HabUltra_Evil' && st.posicion === 'DL') {
+                const golesLocalHT = eventos.filter(e => e.tipo_evento === 'gol' && e.minuto <= 30 && local.titulares.some(j=>j.id_futbolista === e.id_futbolista)).length;
+                const golesVisitHT = eventos.filter(e => e.tipo_evento === 'gol' && e.minuto <= 30 && visit.titulares.some(j=>j.id_futbolista === e.id_futbolista)).length;
+                if ((isLocal && golesLocalHT < golesVisitHT) || (!isLocal && golesVisitHT < golesLocalHT)) misPuntos = Math.round(misPuntos * 1.30);
+            }
+            if (ultraCode === 'HabUltra_Forti' && st.posicion === 'MC') misPuntos += 4;
+            if (ultraCode === 'HabUltra_Modric' && st.posicion === 'MC') misPuntos = Math.round(misPuntos * 1.20);
+            if (ultraCode === 'HabUltra_Chemin' && st.posicion === 'DL') misPuntos = Math.round(misPuntos * 1.15);
+            if (ultraCode === 'HabUltra_BlueBird' && (st.posicion === 'DL' || st.posicion === 'MC')) misPuntos += 3;
+            if (ultraCode === 'HabUltra_Falcao' && (st.posicion === 'DL' || st.posicion === 'DF')) misPuntos += 2;
+            if (ultraCode === 'HabUltra_Esnaiper' && st.posicion === 'DL') misPuntos = Math.round(misPuntos * 1.35);
+            if (ultraCode === 'HabUltra_Churumbel') misPuntos += 5;
+
+            misPuntos = Math.round(misPuntos);
+            await db.query(`INSERT INTO rendimiento_partido (id_partido, id_futbolista, id_user, nota_base, puntos_totales, goles, asistencias, amarillas, rojas) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [partido.id_partido, mio.id_futbolista, man.id_user, st.nota_final, misPuntos, st.goles, st.asistencias, st.amarillas, st.rojas]);
+            puntosTotalesManager += misPuntos;
+          }
         }
+        if (puntosTotalesManager !== 0) await db.query(`UPDATE users_liga SET puntos = puntos + $1 WHERE id_user = $2 AND id_liga = $3`, [puntosTotalesManager, man.id_user, partido.id_liga]);
       }
-
       await db.query('COMMIT');
-      console.log(`¡Partido ${partido.id_partido} guardado! Resultado: ${golesLocal}-${golesVisit}`);
     }
-
-    res.json({ message: 'Partidos simulados correctamente.' });
-
+    res.json({ message: 'Simulación completada.' });
   } catch (err) {
     await db.query('ROLLBACK');
-    console.error("Error en el simulador:", err);
-    res.status(500).json({ error: 'Fallo al simular los partidos' });
+    console.error("Error Simulación:", err);
+    res.status(500).json({ error: 'Fallo brutal en el motor' });
   }
 });
 
