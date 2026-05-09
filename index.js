@@ -245,10 +245,10 @@ router.delete('/:id_liga', verifyToken, requireLeagueRole(['owner']), async (req
   }
 });
 
-// 🗑️ Terminar/Reiniciar Liga con opciones
+// Terminar/Reiniciar Liga con opciones
 router.post('/:id_liga/reset', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
   const { id_liga } = req.params;
-  const { borrarPuntos, borrarJugadores, borrarJornadas, borrarDinero } = req.body;
+  const { borrarPuntos, borrarJugadores, borrarJornadas, borrarDinero, borrarMensajes } = req.body;
 
   try {
     await db.query('BEGIN');
@@ -269,6 +269,16 @@ router.post('/:id_liga/reset', verifyToken, requireLeagueRole(['owner']), async 
 
     if (borrarJugadores) {
       await db.query('DELETE FROM futbolista_user_liga WHERE id_liga = $1', [id_liga]);
+      // También limpiamos pujas activas e historial si borramos jugadores
+      await db.query('DELETE FROM pujas WHERE id_liga = $1', [id_liga]);
+      await db.query('DELETE FROM mercado_liga WHERE id_liga = $1', [id_liga]);
+      await db.query('DELETE FROM historial_transferencias WHERE id_liga = $1', [id_liga]);
+    }
+
+    if (borrarMensajes) {
+      await db.query('DELETE FROM chat_general WHERE id_liga = $1', [id_liga]);
+      await db.query('DELETE FROM ofertas_privadas WHERE id_liga = $1', [id_liga]); // Limpiar ofertas
+      await db.query('DELETE FROM mensajes_privados WHERE id_liga = $1', [id_liga]);
     }
 
     await db.query('COMMIT');
@@ -276,6 +286,83 @@ router.post('/:id_liga/reset', verifyToken, requireLeagueRole(['owner']), async 
   } catch (err) {
     await db.query('ROLLBACK');
     res.status(500).json({ error: 'Error al reiniciar la liga' });
+  }
+});
+
+// Generar Calendario y Draft (ACTUALIZADO: Asegura 11 jugadores)
+router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
+  const { id_liga } = req.params;
+  const { dineroInicial, darPlantilla } = req.body;
+
+  try {
+    await db.query('BEGIN');
+
+    if (dineroInicial !== undefined) {
+      await db.query('UPDATE users_liga SET dinero = $1 WHERE id_liga = $2', [dineroInicial, id_liga]);
+    }
+
+    if (darPlantilla) {
+      const usersRes = await db.query('SELECT id_user FROM users_liga WHERE id_liga = $1', [id_liga]);
+      
+      const shuffleArray = (array) => {
+        for (let i = array.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [array[i], array[j]] = [array[j], array[i]];
+        }
+        return array;
+      };
+
+      for (const u of usersRes.rows) {
+        // Obligatorio: 1 Portero, 4 Defensas, 3 Medios, 3 Delanteros
+        let posicionesNecesarias = ['PT', 'DF', 'DF', 'DF', 'DF', 'MC', 'MC', 'MC', 'DL', 'DL', 'DL'];
+        posicionesNecesarias = shuffleArray(posicionesNecesarias);
+
+        const buckets = [
+          { mMin: 60, mMax: 65, cant: 8 },
+          { mMin: 66, mMax: 70, cant: 2 },
+          { mMin: 75, mMax: 80, cant: 1 }
+        ];
+
+        for (const bucket of buckets) {
+          for (let i = 0; i < bucket.cant; i++) {
+            const posActual = posicionesNecesarias.shift();
+            
+            // 1. Intentamos buscar en el rango de media
+            let player = await db.query(`
+              SELECT id_futbolista FROM futbolistas 
+              WHERE media BETWEEN $1 AND $2 AND TRIM(UPPER(posicion)) = $3 
+              AND tipo_carta = 'normal' AND equipo != 'Real Trébol FC'
+              AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $4)
+              ORDER BY RANDOM() LIMIT 1
+            `, [bucket.mMin, bucket.mMax, posActual, id_liga]);
+
+            // 2. FALLBACK: Si no hay en ese rango, pillamos CUALQUIERA de esa posición
+            if (player.rows.length === 0) {
+              player = await db.query(`
+                SELECT id_futbolista FROM futbolistas 
+                WHERE TRIM(UPPER(posicion)) = $1 AND tipo_carta = 'normal' AND equipo != 'Real Trébol FC'
+                AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $2)
+                ORDER BY RANDOM() LIMIT 1
+              `, [posActual, id_liga]);
+            }
+
+            if (player.rows[0]) {
+              await db.query('INSERT INTO futbolista_user_liga (id_user, id_liga, id_futbolista) VALUES ($1, $2, $3)',
+                [u.id_user, id_liga, player.rows[0].id_futbolista]);
+            }
+          }
+        }
+      }
+    }
+
+    // [Aquí sigue el resto de tu código de generación de jornadas Round-Robin...]
+    // [Asegúrate de copiar también el bloque de "MERCADO INICIAL" que te pasé antes]
+    
+    await db.query('COMMIT');
+    res.json({ message: 'Liga iniciada con éxito. Plantillas de 11 jugadores repartidas.' });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    res.status(400).json({ message: err.message });
   }
 });
 
@@ -376,6 +463,63 @@ router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
   }
 });
 
+// Obtener el Roster, Lore y ESTADÍSTICAS REALES de un equipo de la IA
+router.get('/:id_liga/club/:nombre_club', verifyToken, async (req, res) => {
+  const { id_liga, nombre_club } = req.params;
+  try {
+    const jugRes = await db.query(`
+      SELECT f.id_futbolista, f.nombre, f.posicion, f.media, f.tipo_carta, f.imagen,
+             COALESCE(goles.total, 0) as goles,
+             COALESCE(asistencias.total, 0) as asistencias,
+             COALESCE(amarillas.total, 0) as amarillas,
+             COALESCE(rojas.total, 0) as rojas
+      FROM futbolistas f
+      LEFT JOIN (
+          SELECT id_futbolista, COUNT(*) as total 
+          FROM eventos_partido ep JOIN partidos p ON p.id_partido = ep.id_partido 
+          WHERE p.id_liga = $1 AND tipo_evento = 'gol' 
+          GROUP BY id_futbolista
+      ) goles ON f.id_futbolista = goles.id_futbolista
+      LEFT JOIN (
+          SELECT id_asistente as id_futbolista, COUNT(*) as total 
+          FROM eventos_partido ep JOIN partidos p ON p.id_partido = ep.id_partido 
+          WHERE p.id_liga = $1 AND tipo_evento = 'gol' AND id_asistente IS NOT NULL 
+          GROUP BY id_asistente
+      ) asistencias ON f.id_futbolista = asistencias.id_futbolista
+      LEFT JOIN (
+          SELECT id_futbolista, COUNT(*) as total 
+          FROM eventos_partido ep JOIN partidos p ON p.id_partido = ep.id_partido 
+          WHERE p.id_liga = $1 AND tipo_evento = 'amarilla' 
+          GROUP BY id_futbolista
+      ) amarillas ON f.id_futbolista = amarillas.id_futbolista
+      LEFT JOIN (
+          SELECT id_futbolista, COUNT(*) as total 
+          FROM eventos_partido ep JOIN partidos p ON p.id_partido = ep.id_partido 
+          WHERE p.id_liga = $1 AND tipo_evento = 'roja' 
+          GROUP BY id_futbolista
+      ) rojas ON f.id_futbolista = rojas.id_futbolista
+      WHERE f.equipo = $2
+      ORDER BY f.media DESC
+    `, [id_liga, nombre_club]);
+
+    const lores = {
+      'Real Trébol FC': 'Los Dioses fundadores de la liga. Invencibles en su estadio.',
+      'Motor Club Chacón': 'Velocidad, gasolina y rock n roll. Su ataque es temible.',
+      'Athletic Hullera': 'Mineros duros de roer. Su defensa es un muro de piedra.',
+      'Deportivo Relámpago': 'El equipo del pueblo, conocido por sus contraataques fugaces.',
+      'Real Pinar FC': 'Los reyes del bosque. Fútbol elegante y de toque.'
+    };
+
+    res.json({
+      equipo: nombre_club,
+      lore: lores[nombre_club] || 'Un club histórico de Isla Trébol con una afición muy fiel y pasional.',
+      plantilla: jugRes.rows
+    });
+  } catch(err) {
+    res.status(500).json({message: 'Error cargando el club'});
+  }
+});
+
 // Obtener mis jugadores de la liga
 router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
@@ -451,61 +595,19 @@ router.put('/:id_liga/plantilla', verifyToken, async (req, res) => {
   }
 });
 
-// Guardar la alineación de un usuario en una liga
-router.put('/:id_liga/plantilla', verifyToken, async (req, res) => {
-  const { id_liga } = req.params;
-  const idUser = req.user.id;
-  const { formacion, titulares } = req.body; 
-
+// Ver la plantilla de un rival
+router.get('/:id_liga/jugadores-rival/:id_user', verifyToken, async (req, res) => {
+  const { id_liga, id_user } = req.params;
   try {
-    await db.query('BEGIN'); 
-
-    // 1. Actualizar la formación preferida del usuario en esta liga
-    if (formacion) {
-      await db.query(
-        'UPDATE users_liga SET formacion = $1 WHERE id_user = $2 AND id_liga = $3',
-        [formacion, idUser, id_liga]
-      );
-    }
-
-    // 2. Mandar a TODOS los jugadores al banquillo y limpiar su hueco
-    await db.query(
-      'UPDATE futbolista_user_liga SET es_titular = false, hueco_plantilla = NULL WHERE id_user = $1 AND id_liga = $2',
-      [idUser, id_liga]
-    );
-
-    // 3. Ascender a titulares a los que estén en el césped en su hueco específico
-    if (titulares && titulares.length > 0) {
-      for (const tit of titulares) {
-        
-        // --- SEGURIDAD ANTI-HACKERS PARA EL JUGADOR 12 ---
-        if (tit.hueco === 'hueco-12') {
-          const checkUltra = await db.query(
-            'SELECT tipo_carta FROM futbolistas WHERE id_futbolista = $1',
-            [tit.id]
-          );
-          
-          if (checkUltra.rows.length === 0 || checkUltra.rows[0].tipo_carta !== 'ultra') {
-            throw new Error('Manipulación detectada: El pedestal del Jugador 12 solo admite leyendas ULTRA.');
-          }
-        }
-        // -------------------------------------------------
-
-        await db.query(
-          'UPDATE futbolista_user_liga SET es_titular = true, hueco_plantilla = $1 WHERE id_user = $2 AND id_liga = $3 AND id_futbolista = $4',
-          [tit.hueco, idUser, id_liga, tit.id]
-        );
-      }
-    }
-
-    await db.query('COMMIT');
-    res.json({ message: '¡Plantilla guardada con éxito!' });
-    
+    const result = await db.query(`
+      SELECT f.*, ful.es_titular, ful.hueco_plantilla, ful.en_venta, ful.precio_venta
+      FROM futbolista_user_liga ful 
+      JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
+      WHERE ful.id_liga = $1 AND ful.id_user = $2
+    `, [id_liga, id_user]);
+    res.json(result.rows);
   } catch (err) {
-    await db.query('ROLLBACK');
-    console.error("Error guardando plantilla:", err);
-    // Devolvemos el mensaje de error específico si alguien intentó la trampa
-    res.status(500).json({ message: err.message || 'Error al guardar la alineación' });
+    res.status(500).json({ message: 'Error obteniendo jugadores del rival' });
   }
 });
 
@@ -575,7 +677,6 @@ router.post('/:id_liga/cancelar-venta', verifyToken, async (req, res) => {
 
 
 //CALENDARIO
-// Generar el calendario de la liga
 // Generar el calendario de la liga y configurar la temporada
 router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
   const { id_liga } = req.params;
@@ -2177,46 +2278,42 @@ router.get('/:id_liga/clasificacion-clubes', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   try {
     const query = `
-      WITH Resultados AS (
-        SELECT 
-          equipo_local AS equipo,
-          goles_local AS gf,
-          goles_visitante AS gc,
-          CASE WHEN goles_local > goles_visitante THEN 1 ELSE 0 END AS pg,
-          CASE WHEN goles_local = goles_visitante THEN 1 ELSE 0 END AS pe,
-          CASE WHEN goles_local < goles_visitante THEN 1 ELSE 0 END AS pp,
+      WITH Equipos AS (
+        SELECT DISTINCT equipo FROM futbolistas WHERE equipo != 'Real Trébol FC'
+      ),
+      Resultados AS (
+        SELECT equipo_local AS equipo, goles_local AS gf, goles_visitante AS gc, 
+          CASE WHEN goles_local > goles_visitante THEN 1 ELSE 0 END AS pg, 
+          CASE WHEN goles_local = goles_visitante THEN 1 ELSE 0 END AS pe, 
+          CASE WHEN goles_local < goles_visitante THEN 1 ELSE 0 END AS pp, 
           CASE WHEN goles_local > goles_visitante THEN 3 WHEN goles_local = goles_visitante THEN 1 ELSE 0 END AS pts
         FROM partidos WHERE id_liga = $1 AND estado = 'finalizado'
         UNION ALL
-        SELECT 
-          equipo_visitante AS equipo,
-          goles_visitante AS gf,
-          goles_local AS gc,
-          CASE WHEN goles_visitante > goles_local THEN 1 ELSE 0 END AS pg,
-          CASE WHEN goles_visitante = goles_local THEN 1 ELSE 0 END AS pe,
-          CASE WHEN goles_visitante < goles_local THEN 1 ELSE 0 END AS pp,
+        SELECT equipo_visitante AS equipo, goles_visitante AS gf, goles_local AS gc, 
+          CASE WHEN goles_visitante > goles_local THEN 1 ELSE 0 END AS pg, 
+          CASE WHEN goles_visitante = goles_local THEN 1 ELSE 0 END AS pe, 
+          CASE WHEN goles_visitante < goles_local THEN 1 ELSE 0 END AS pp, 
           CASE WHEN goles_visitante > goles_local THEN 3 WHEN goles_visitante = goles_local THEN 1 ELSE 0 END AS pts
         FROM partidos WHERE id_liga = $1 AND estado = 'finalizado'
       )
-      SELECT 
-        equipo,
-        COUNT(*) AS pj,
-        SUM(pg) AS pg,
-        SUM(pe) AS pe,
-        SUM(pp) AS pp,
-        SUM(gf) AS gf,
-        SUM(gc) AS gc,
-        (SUM(gf) - SUM(gc)) AS dif,
-        SUM(pts) AS puntos_totales
-      FROM Resultados
-      GROUP BY equipo
-      ORDER BY puntos_totales DESC, dif DESC, gf DESC;
+      SELECT e.equipo, 
+             COALESCE(COUNT(r.equipo), 0) AS pj, 
+             COALESCE(SUM(r.pg), 0) AS pg, 
+             COALESCE(SUM(r.pe), 0) AS pe, 
+             COALESCE(SUM(r.pp), 0) AS pp, 
+             COALESCE(SUM(r.gf), 0) AS gf, 
+             COALESCE(SUM(r.gc), 0) AS gc, 
+             COALESCE(SUM(r.gf) - SUM(r.gc), 0) AS dif, 
+             COALESCE(SUM(r.pts), 0) AS puntos_totales
+      FROM Equipos e
+      LEFT JOIN Resultados r ON e.equipo = r.equipo
+      GROUP BY e.equipo 
+      ORDER BY puntos_totales DESC, dif DESC, gf DESC, e.equipo ASC;
     `;
     const clasificacion = await db.query(query, [id_liga]);
     res.json(clasificacion.rows);
-  } catch(err) {
-    console.error(err);
-    res.status(500).json({message: 'Error calculando la clasificación de los clubes'});
+  } catch(err) { 
+    res.status(500).json({message: 'Error calculando la clasificación de los clubes'}); 
   }
 });
 
