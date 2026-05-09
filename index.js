@@ -733,6 +733,58 @@ router.get('/:id_liga/partido/:id_partido', verifyToken, async (req, res) => {
   }
 });
 
+// 🏆 Obtener el Ranking de Mánagers de UNA jornada específica
+router.get('/:id_liga/ranking-jornada/:jornada', verifyToken, async (req, res) => {
+  const { id_liga, jornada } = req.params;
+  try {
+    const query = `
+      SELECT 
+        u.id, u.username, u.avatar,
+        COALESCE(SUM(rp.puntos_totales), 0) as puntos_jornada
+      FROM users_liga ul
+      JOIN users u ON ul.id_user = u.id
+      LEFT JOIN rendimiento_partido rp ON rp.id_user = ul.id_user 
+      LEFT JOIN partidos p ON rp.id_partido = p.id_partido AND p.jornada = $2
+      WHERE ul.id_liga = $1
+      GROUP BY u.id, u.username, u.avatar
+      ORDER BY puntos_jornada DESC, u.username ASC
+    `;
+    const result = await db.query(query, [id_liga, jornada]);
+    res.json(result.rows);
+  } catch(err) {
+    res.status(500).json({message: 'Error cargando ranking de jornada'});
+  }
+});
+
+// Obtener el Roster y Lore de un equipo de la IA
+router.get('/:id_liga/club/:nombre_club', verifyToken, async (req, res) => {
+  const { id_liga, nombre_club } = req.params;
+  try {
+    const jugRes = await db.query(`
+      SELECT id_futbolista, nombre, posicion, media, tipo_carta, precio 
+      FROM futbolistas WHERE equipo = $1 
+      ORDER BY media DESC
+    `, [nombre_club]);
+
+    // Generamos un lore dinámico básico (puedes ampliarlo luego en BD si quieres)
+    const lores = {
+      'Real Trébol FC': 'Los Dioses fundadores de la liga. Invencibles en su estadio.',
+      'Motor Club Chacón': 'Velocidad, gasolina y rock n roll. Su ataque es temible.',
+      'Athletic Hullera': 'Mineros duros de roer. Su defensa es un muro de piedra.',
+      'Deportivo Relámpago': 'El equipo del pueblo, conocido por sus contraataques fugaces.',
+      'Real Pinar FC': 'Los reyes del bosque. Fútbol elegante y de toque.'
+    };
+
+    res.json({
+      equipo: nombre_club,
+      lore: lores[nombre_club] || 'Un club histórico de Isla Trébol con una afición muy fiel y pasional.',
+      plantilla: jugRes.rows
+    });
+  } catch(err) {
+    res.status(500).json({message: 'Error cargando el club'});
+  }
+});
+
 app.use('/api/ligas', router);
 
 // Ver ligas de un usuario
