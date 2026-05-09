@@ -1875,23 +1875,125 @@ const REQ_FORMACION = {
 };
 
 // =================================================================
-// 🎮 CRON JOB: MOTOR DE SIMULACIÓN DE PARTIDOS V3 (70 MINUTOS + MAGIA)
+// 🎮 CRON JOB: MOTOR DE SIMULACIÓN DE PARTIDOS V4 (NARRADOR HIPER-REALISTA)
 // =================================================================
 app.get('/api/cron/simular-partidos', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ error: 'No autorizado' });
 
+  // --- DICCIONARIO DE FRASES DEL COMENTARISTA ---
+  const FRASES = {
+    golesSolo: [
+      "¡GOOOOOOOLAAAAAAAAAAAAAZO DE {goleador}! ¡Le pegó con el alma y la mandó a guardar!",
+      "¡PERO QUÉ BARBARIDAD! {goleador} se inventa una jugada de otro planeta y la clava en la mismísima escuadra.",
+      "¡Gooooooool! {goleador} huele sangre, roba en la frontal, recorta al portero y fusila sin piedad.",
+      "¡Gooooooooool! Zapatazo nuclear de {goleador} que casi arranca la red de cuajo. ¡Qué potencia!",
+      "¡GOL GOL GOL GOL! ¡Sáquenla si pueden! {goleador} define con una vaselina exquisita que deja a todo el estadio mudo.",
+      "¡GOOOOOOOL! {goleador} arranca desde su casa, deja a tres rivales por el suelo y define como los dioses.",
+      "¡GOLAZO! ¡Qué remate, por favor! {goleador} la engancha de volea y el balón entra pidiendo permiso.",
+      "¡Gooooool! Error garrafal en la salida de balón, {goleador} intercepta y castiga el error. ¡Instinto asesino!",
+      "¡GOOOOOOOL! ¡Se cae el estadio! Tiro libre directo de {goleador} que limpia las telarañas del arco.",
+      "¡Gol de {goleador}! Entró al área como un búfalo, aguantó la embestida del central y definió cruzado. ¡Imparable!"
+    ],
+    golesAsistencia: [
+      "¡GOOOOOOOL! ¡Pero medio gol es de {asistente}! Qué escándalo de pase, {goleador} solo tuvo que empujarla.",
+      "¡Gooooooool! Balón picadito, pura magia de {asistente}, y {goleador} empalma una volea de locos.",
+      "¡GOL GOL GOL! Centro teledirigido con tiralíneas de {asistente} a la cabeza de {goleador}. ¡Martillazo a la red!",
+      "¡GOLAZO! Pared de videoconsola entre {asistente} y {goleador}, taconazo incluido, que destroza a la defensa entera.",
+      "¡Gol de {goleador}! Asistencia de cirujano de {asistente}, que vio un hueco donde solo había piernas rivales.",
+      "¡Gooooool! {asistente} rompe líneas con un pase raso a la carrera de {goleador}, que define de primeras. ¡Fútbol total!",
+      "¡GOL! Jugadón por la banda de {asistente}, pone el pase de la muerte y {goleador} entra con todo para reventar el balón.",
+      "¡Gooooool! Triangulación perfecta. {asistente} asiste de tacón y {goleador} no perdona en el mano a mano.",
+      "¡GOL! Saque de esquina sacado con veneno por {asistente} y {goleador} se eleva sobre las nubes para marcar.",
+      "¡GOOOOOOOL! Pase largo, de 40 metros, de {asistente} al pecho de {goleador}, que controla y fusila al portero."
+    ],
+    lesiones: [
+      "🚑 ¡UFFFF! Qué mala pinta tiene eso... {jugador} se rompe en seco tras un mal giro. El estadio enmudece. Posible {lesion}.",
+      "🚑 ¡No me lo puedo creer! {jugador} pisa mal y cae gritando de dolor. Entran las asistencias a toda prisa. Diagnóstico: {lesion}.",
+      "🚑 ¡Drama en el terreno de juego! {jugador} sale en camilla tapándose la cara con la camiseta. Sufre {lesion}.",
+      "🚑 ¡Qué lástima! {jugador} frena en seco en plena carrera de sprint y se tira al suelo. El fisio pide el cambio por {lesion}.",
+      "🚑 Saltan las alarmas. Choque durísimo y {jugador} se lleva la peor parte. Abandona el campo cojeando visiblemente ({lesion}).",
+      "🚑 Silencio sepulcral en la grada. {jugador} cae fulminado tocándose la rodilla. Pésimas noticias, parece {lesion}.",
+      "🚑 Dura baja. {jugador} no puede seguir tras esa terrorífica caída. Se confirma {lesion} y no podrá continuar."
+    ],
+    amarillas: [
+      "🟨 ¡Menudo hachazo! El árbitro le saca la amarilla a {jugador} y da gracias que no sea de otro color.",
+      "🟨 Amarilla clarísima para {jugador}. Se tiró con los tacos por delante a cortar un contragolpe letal.",
+      "🟨 ¡Se calentó el partido! Tarjeta amarilla a {jugador} por encararse con el colegiado de forma muy agresiva.",
+      "🟨 El árbitro no perdona una. Amarilla para {jugador} tras un plantillazo feísimo en el centro del campo.",
+      "🟨 Amarilla para {jugador}. Agarrón descarado por detrás, cortando la jugada. De manual de fútbol.",
+      "🟨 Tarjeta amarilla para {jugador}. Falta táctica muy dura para frenar la transición rival.",
+      "🟨 ¡Ojo que saltan chispas! Amarilla a {jugador} tras un encontronazo durísimo. El árbitro pone orden."
+    ],
+    rojas: [
+      "🟥 ¡A LA DUCHA! Roja directa a {jugador}. ¡Entrada criminal a la altura de la rodilla que casi lo parte en dos!",
+      "🟥 ¡Se le cruzaron los cables! {jugador} suelta un codazo en la cara y el árbitro lo expulsa sin miramientos.",
+      "🟥 Roja inapelable para {jugador}. Era el último hombre y derribó al delantero cuando ya encaraba al portero.",
+      "🟥 ¡ESCÁNDALO! ¡El árbitro le saca la roja a {jugador}! Tremenda agresión sin balón que deja a su equipo hundido.",
+      "🟥 ¡Roja directa! {jugador} pierde los papeles por completo y suelta una patada a destiempo. ¡A la calle!",
+      "🟥 ¡No me lo puedo creer, expulsado! Doble amarilla absurda de {jugador} en un minuto. ¡Deja a los suyos con 10 hombres!"
+    ],
+    rellenoParadas: [
+      "🧤 ¡SANTO CIELO QUÉ PARADÓN! El portero vuela como un superhéroe para sacarle el gol a {atacante} en la misma escuadra.",
+      "🧤 ¡Era gol cantado! Pero el arquero saca un pie antológico a bocajarro ante el disparo de {atacante}. ¡Impresionante!",
+      "🧤 ¡Milagro en el área chica! {atacante} fusila a dos metros y el meta la saca con unos reflejos felinos.",
+      "🧤 ¡Gatito puro! Vuelo sin motor para desviar con la punta de los dedos el trallazo lejano de {atacante}.",
+      "🧤 ¡El muro bajo palos! Atrapa el portero en dos tiempos el remate mordido pero envenenado de {atacante}.",
+      "🧤 ¡Increíble! Doble intervención del meta: primero le saca el tiro a {atacante} y luego tapa el rebote con el pecho."
+    ],
+    rellenoPalos: [
+      "🥅 ¡AL LARGUEEEEEERO! El misil de {atacante} hace temblar la portería. ¡Aún sigue vibrando el metal!",
+      "🥅 ¡CRACK! El sonido del poste tras el tiro cruzado de {atacante} despierta a todo el estadio. ¡Qué cerca estuvo!",
+      "🥅 Uyyyy... ¡Casi cae el estadio! El balón de {atacante} roza la madera y se marcha acariciando la red por fuera.",
+      "🥅 ¡Por milímetros! {atacante} cruzó su disparo ante la salida del arquero y el balón lamió el poste izquierdo.",
+      "🥅 ¡A las nubes! {atacante} lo intentó de volea tras un rechace, pero la mandó directamente al tercer anfiteatro.",
+      "🥅 ¡Palo y fuera! Remate de cabeza imparable de {atacante} que se estrella en la cepa del poste derecho."
+    ],
+    rellenoRegates: [
+      "✨ ¡Por favor, qué escándalo! {atacante} hace una croqueta, le tira un caño al central y sale sonriendo.",
+      "✨ {atacante} está absolutamente desatado. Bicicleta doble, freno, y deja a su marcador buscando la cadera por el suelo.",
+      "✨ ¡Qué descaro, qué atrevimiento! {atacante} le hace un sombrero al defensor en una baldosa y sale jugando.",
+      "✨ Espectacular eslalon de {atacante}, que coge la moto, deja sentados a tres rivales y se asoma al balcón del área.",
+      "✨ Pura magia brasileña. {atacante} pisa el balón, recorta hacia dentro con una elástica y arranca los aplausos del público.",
+      "✨ ¡Juega a otro deporte! Control orientado maravilloso de {atacante} que rompe dos líneas de presión de un solo toque."
+    ],
+    rellenoDefensas: [
+      "🛡️ ¡QUÉ CORTE! {defensor} se lanza a ras de hierba para salvar un gol seguro bajo palos. ¡Vale como un tanto!",
+      "🛡️ Imperial, como un titán. {defensor} se cruza y le roba la cartera al delantero en el último suspiro de la jugada.",
+      "🛡️ ¡Limpieza total! {defensor} mete la pierna en un cruce milimétrico dentro del área sin hacer falta. Cirugía pura.",
+      "🛡️ Anticipación perfecta de {defensor}, que lee el pase entrelíneas, corta el peligro y sale jugando con la cabeza alta.",
+      "🛡️ {defensor} se erige como un auténtico muro de hormigón armado y despeja de cabeza el bombardeo aéreo.",
+      "🛡️ ¡Salvavidas! {defensor} se tira con todo al suelo para taponar un disparo a quemarropa que iba directo a la red."
+    ],
+    rellenoTransicion: [
+      "👟 El partido entra en fase de ajedrez. Posesión larga y nerviosa, buscando desesperadamente una grieta en la muralla rival.",
+      "👟 ¡Uy, uy, uy! Falta de entendimiento en el medio, pierden un balón tonto pero el rival no sabe aprovechar el contragolpe.",
+      "👟 Minutos de máxima tensión. Nadie quiere arriesgar el balón. Mucho juego horizontal en la zona de creación.",
+      "👟 El ritmo se vuelve loco. Un correcalles, de área a área, pero las defensas están achicando agua como pueden.",
+      "👟 Balonazo largo en profundidad intentando buscar la espalda de la defensa, pero se marcha por línea de fondo. Demasiada fuerza.",
+      "👟 Mucho juego subterráneo en el medio campo. El partido se ha vuelto táctico, muy trabado y con muchas interrupciones.",
+      "👟 Presión asfixiante muy arriba. El equipo no deja respirar la salida de balón rival, obligando a pelotazos constantes."
+    ]
+  };
+
+  // Función para rellenar las variables en las frases
+  const narrar = (arrayFrases, vars) => {
+    let frase = arrayFrases[Math.floor(Math.random() * arrayFrases.length)];
+    for (const key in vars) {
+      frase = frase.replace(new RegExp(`{${key}}`, 'g'), vars[key]);
+    }
+    return frase;
+  };
+
   try {
     const partidosRes = await db.query(`SELECT * FROM partidos WHERE estado = 'pendiente' AND fecha_partido <= NOW()`);
     if (partidosRes.rows.length === 0) return res.json({ message: 'No hay partidos pendientes.' });
 
-    // Restamos 1 partido de sanción y lesión a TODOS los jugadores de la base de datos
     await db.query(`UPDATE futbolistas SET partidos_sancion = GREATEST(0, partidos_sancion - 1), partidos_lesion = GREATEST(0, partidos_lesion - 1)`);
 
     for (const partido of partidosRes.rows) {
       await db.query('BEGIN');
       
-      // 1. Cargar disponibles (Ni lesionados, ni sancionados)
       const jugRes = await db.query(`SELECT * FROM futbolistas WHERE equipo IN ($1, $2) AND partidos_lesion = 0 AND partidos_sancion = 0`, [partido.equipo_local, partido.equipo_visitante]);
 
       const armarEquipo = (nombreEquipo) => {
@@ -1912,7 +2014,6 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
       let visit = armarEquipo(partido.equipo_visitante);
       let golesLocal = 0, golesVisit = 0, eventos = [], statsPartido = {}, partidoSuspendido = false;
 
-      // JSON de Alineaciones para mostrar luego en el Frontend
       const alineacionGuardada = {
         local: { equipo: local.nombre, titulares: local.titulares.map(t=>t.id_futbolista), banquillo: local.banquillo.map(b=>b.id_futbolista) },
         visitante: { equipo: visit.nombre, titulares: visit.titulares.map(t=>t.id_futbolista), banquillo: visit.banquillo.map(b=>b.id_futbolista) }
@@ -1924,14 +2025,14 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
       local.titulares.forEach(j => statsPartido[j.id_futbolista].jugo = true);
       visit.titulares.forEach(j => statsPartido[j.id_futbolista].jugo = true);
 
-      // --- 2. EL PARTIDO (70 MINS: 60 JUEGO + 10 DESCANSO) ---
+      // --- EL PARTIDO (70 MINS) ---
       for (let minuto = 1; minuto <= 70; minuto++) {
         if (partidoSuspendido) break;
 
-        // DESCANSO (Minutos 31 al 40)
+        // DESCANSO
         if (minuto > 30 && minuto <= 40) {
           if (minuto === 31) {
-            eventos.push({ minuto: 30, tipo_evento: 'info', id_futbolista: null, descripcion: '⏱️ Final de la primera parte. Los jugadores se van al vestuario.' });
+            eventos.push({ minuto: 30, tipo_evento: 'info', id_futbolista: null, descripcion: '⏱️ Pita el árbitro. Jugadores al túnel de vestuarios para el descanso.' });
             [local, visit].forEach(equipo => {
               if (equipo.banquillo.length > 0 && equipo.cambiosHechos < 5 && Math.random() > 0.2) {
                 const sale = equipo.titulares[Math.floor(Math.random() * equipo.titulares.length)];
@@ -1940,35 +2041,43 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
                 equipo.titulares.push(entra);
                 statsPartido[entra.id_futbolista].jugo = true;
                 equipo.cambiosHechos++;
-                eventos.push({ minuto: 'HT', tipo_evento: 'cambio', id_futbolista: entra.id_futbolista, descripcion: `🔄 Cambio táctico al descanso: Entra ${entra.nombre}, sale ${sale.nombre}.` });
+                eventos.push({ minuto: 'HT', tipo_evento: 'cambio', id_futbolista: entra.id_futbolista, descripcion: `🔄 Mueve el banquillo el míster al descanso: Se retira ${sale.nombre} y salta al verde ${entra.nombre}.` });
               }
             });
           }
-          if (minuto === 40) eventos.push({ minuto: 41, tipo_evento: 'info', id_futbolista: null, descripcion: '⚽ Arranca la segunda mitad.' });
+          if (minuto === 40) eventos.push({ minuto: 41, tipo_evento: 'info', id_futbolista: null, descripcion: '⚽ Rueda de nuevo el esférico. ¡Arranca la segunda mitad!' });
           continue; 
         }
 
         const minReal = minuto > 40 ? minuto - 10 : minuto;
+        let eventoImportanteOcurrido = false;
 
-        // GOLES
+        // GOLES (6% chance)
         if (Math.random() < 0.06) {
           const atacaLocal = Math.random() < 0.5;
           const atacante = atacaLocal ? local : visit;
           if (atacante.titulares.length > 0) {
             const goleador = atacante.titulares[Math.floor(Math.random() * atacante.titulares.length)];
             let asistente = null;
+            let fraseGol = '';
+            
             if (Math.random() < 0.5 && atacante.titulares.length > 1) {
               asistente = atacante.titulares.filter(j => j.id_futbolista !== goleador.id_futbolista)[0];
               statsPartido[asistente.id_futbolista].asistencias++;
+              fraseGol = narrar(FRASES.golesAsistencia, { goleador: goleador.nombre, asistente: asistente.nombre });
+            } else {
+              fraseGol = narrar(FRASES.golesSolo, { goleador: goleador.nombre });
             }
+            
             statsPartido[goleador.id_futbolista].goles++;
             if (atacaLocal) golesLocal++; else golesVisit++;
-            eventos.push({ minuto: minReal, tipo_evento: 'gol', id_futbolista: goleador.id_futbolista, descripcion: `¡GOOOOL de ${goleador.nombre}!` });
+            eventos.push({ minuto: minReal, tipo_evento: 'gol', id_futbolista: goleador.id_futbolista, descripcion: fraseGol });
+            eventoImportanteOcurrido = true;
           }
         }
 
         // LESIONES (1% chance)
-        if (Math.random() < 0.01) {
+        if (!eventoImportanteOcurrido && Math.random() < 0.01) {
           const sufreLesion = Math.random() < 0.5 ? local : visit;
           if (sufreLesion.titulares.length > 0) {
             const lesionado = sufreLesion.titulares[Math.floor(Math.random() * sufreLesion.titulares.length)];
@@ -1976,42 +2085,72 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
             const tirada = Math.random();
             let dias = 1, tipo = 'Sobrecarga muscular';
             if (tirada > 0.9) { dias = 14; tipo = 'Rotura de ligamentos'; } else if (tirada > 0.7) { dias = 7; tipo = 'Rotura fibrilar'; } else if (tirada > 0.4) { dias = 3; tipo = 'Esguince de tobillo'; }
+            
             statsPartido[lesionado.id_futbolista].lesion_sufrida = { dias, tipo };
-            let desc = `🚑 ¡LESIÓN! ${lesionado.nombre} se retira en camilla (${tipo}).`;
+            let desc = narrar(FRASES.lesiones, { jugador: lesionado.nombre, lesion: tipo });
+            
             if (sufreLesion.banquillo.length > 0) {
               const entra = sufreLesion.banquillo.shift();
               sufreLesion.titulares.push(entra);
               statsPartido[entra.id_futbolista].jugo = true;
-              desc += ` Entra ${entra.nombre}.`;
-            } else { desc += ` ¡Se quedan con 10!`; }
+              desc += ` Su lugar lo ocupa urgentemente ${entra.nombre}.`;
+            } else { desc += ` ¡Qué drama, se quedan con 10 hombres!`; }
+            
             eventos.push({ minuto: minReal, tipo_evento: 'lesion', id_futbolista: lesionado.id_futbolista, descripcion: desc });
+            eventoImportanteOcurrido = true;
           }
         }
 
-        // TARJETAS
-        if (Math.random() < 0.04) {
+        // TARJETAS (4% chance)
+        if (!eventoImportanteOcurrido && Math.random() < 0.04) {
           const equipoFalta = Math.random() < 0.5 ? local : visit;
           if (equipoFalta.titulares.length > 0) {
             const infractor = equipoFalta.titulares[Math.floor(Math.random() * equipoFalta.titulares.length)];
             statsPartido[infractor.id_futbolista].amarillas++;
+            
             if (statsPartido[infractor.id_futbolista].amarillas === 2 || Math.random() < 0.1) {
               statsPartido[infractor.id_futbolista].rojas = 1;
               equipoFalta.titulares = equipoFalta.titulares.filter(j => j.id_futbolista !== infractor.id_futbolista);
               equipoFalta.rojas++;
-              eventos.push({ minuto: minReal, tipo_evento: 'roja', id_futbolista: infractor.id_futbolista, descripcion: `🟥 ROJA DIRECTA a ${infractor.nombre}.` });
+              eventos.push({ minuto: minReal, tipo_evento: 'roja', id_futbolista: infractor.id_futbolista, descripcion: narrar(FRASES.rojas, { jugador: infractor.nombre }) });
+              
               if (equipoFalta.rojas >= 3) {
                 partidoSuspendido = true;
                 if (equipoFalta === local) { golesLocal = 0; golesVisit = 3; } else { golesLocal = 3; golesVisit = 0; }
-                eventos.push({ minuto: minReal, tipo_evento: 'info', descripcion: `⚖️ FORFAIT. Suspendido por falta de jugadores. Derrota 3-0.` });
+                eventos.push({ minuto: minReal, tipo_evento: 'info', descripcion: `⚖️ FORFAIT. El árbitro suspende el partido. El equipo no tiene el mínimo de jugadores tras tantas expulsiones. Derrota automática 3-0.` });
               }
             } else {
-              eventos.push({ minuto: minReal, tipo_evento: 'amarilla', id_futbolista: infractor.id_futbolista, descripcion: `🟨 Amarilla para ${infractor.nombre}.` });
+              eventos.push({ minuto: minReal, tipo_evento: 'amarilla', id_futbolista: infractor.id_futbolista, descripcion: narrar(FRASES.amarillas, { jugador: infractor.nombre }) });
             }
+            eventoImportanteOcurrido = true;
+          }
+        }
+
+        // NARRACIÓN DE RELLENO (Si no hubo gol, ni lesión, ni tarjeta -> 15% chance de jugada inmersiva)
+        if (!eventoImportanteOcurrido && Math.random() < 0.15) {
+          const atacaLocal = Math.random() < 0.5;
+          const equipoAtacante = atacaLocal ? local : visit;
+          const equipoDefensor = atacaLocal ? visit : local;
+
+          if (equipoAtacante.titulares.length > 0 && equipoDefensor.titulares.length > 0) {
+            const jugAtacante = equipoAtacante.titulares[Math.floor(Math.random() * equipoAtacante.titulares.length)].nombre;
+            const jugDefensor = equipoDefensor.titulares[Math.floor(Math.random() * equipoDefensor.titulares.length)].nombre;
+            
+            const tipoRelleno = Math.random();
+            let fraseInfo = '';
+
+            if (tipoRelleno < 0.2) fraseInfo = narrar(FRASES.rellenoParadas, { atacante: jugAtacante });
+            else if (tipoRelleno < 0.4) fraseInfo = narrar(FRASES.rellenoPalos, { atacante: jugAtacante });
+            else if (tipoRelleno < 0.6) fraseInfo = narrar(FRASES.rellenoRegates, { atacante: jugAtacante });
+            else if (tipoRelleno < 0.8) fraseInfo = narrar(FRASES.rellenoDefensas, { defensor: jugDefensor });
+            else fraseInfo = narrar(FRASES.rellenoTransicion, {});
+
+            eventos.push({ minuto: minReal, tipo_evento: 'info', id_futbolista: null, descripcion: fraseInfo });
           }
         }
       }
 
-      // --- 3. POST-PARTIDO: Notas y Fluctuaciones ---
+      // --- POST-PARTIDO: Notas, Puntos y BD ---
       for (let id in statsPartido) {
         let st = statsPartido[id];
         if (!st.jugo) continue;
@@ -2025,7 +2164,6 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
         if (st.lesion_sufrida) await db.query(`UPDATE futbolistas SET estado_lesion = $1, partidos_lesion = $2 WHERE id_futbolista = $3`, [st.lesion_sufrida.tipo, st.lesion_sufrida.dias, st.id_futbolista]);
         if (st.rojas > 0) await db.query(`UPDATE futbolistas SET partidos_sancion = $1 WHERE id_futbolista = $2`, [Math.floor(Math.random() * 4) + 1, st.id_futbolista]);
 
-        // Subidas y bajadas solo para no-ultras
         if (st.tipo_carta !== 'ultra') {
           let nuevaMedia = st.media;
           if (st.nota_final > 7.5 && Math.random() < ((100 - st.media) / 100)) nuevaMedia = Math.min(94, nuevaMedia + 1);
@@ -2042,7 +2180,6 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
         await db.query(`INSERT INTO eventos_partido (id_partido, minuto, tipo_evento, id_futbolista, id_asistente, descripcion) VALUES ($1, $2, $3, $4, $5, $6)`, [partido.id_partido, ev.minuto, ev.tipo_evento, ev.id_futbolista, ev.id_asistente, ev.descripcion]);
       }
 
-      // --- 4. PUNTOS FANTASY + MAGIA HABILIDADES ---
       const mánagers = await db.query(`SELECT DISTINCT id_user FROM users_liga WHERE id_liga = $1`, [partido.id_liga]);
       for (const man of mánagers.rows) {
         const suPlantilla = await db.query(`SELECT ful.*, f.codigo_habilidad FROM futbolista_user_liga ful JOIN futbolistas f ON ful.id_futbolista = f.id_futbolista WHERE ful.id_user = $1 AND ful.id_liga = $2 AND ful.es_titular = true`, [man.id_user, partido.id_liga]);
@@ -2073,7 +2210,6 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
             const win = golesEquipo > golesRival;
             const loss = golesEquipo < golesRival;
 
-            // Habilidades Especiales
             if (hab === 'HabEspecial_Egoista' && st.goles > 0 && st.goles === golesEquipo) misPuntos += 10;
             if (hab === 'HabEspecial_EfectoBolaNieve') misPuntos += golesEquipo;
             if (hab === 'HabEspecial_HeroeAgonico' && win && eventos.some(e => e.id_futbolista === mio.id_futbolista && e.minuto >= 50 && e.tipo_evento === 'gol')) misPuntos += 8;
@@ -2089,7 +2225,6 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
             misPuntos += bonusLider;
             if (espejismoActivo) misPuntos *= 2;
 
-            // Habilidades Ultra (Jugador 12)
             if (ultraCode === 'HabUltra_Trebolin' && (st.posicion === 'DF' || st.posicion === 'PT')) misPuntos = Math.round(misPuntos * 1.20);
             if (ultraCode === 'HabUltra_Wade') misPuntos = Math.round(misPuntos * 1.10);
             if (ultraCode === 'HabUltra_Cuestarriba' && (st.posicion === 'DF' || st.posicion === 'MC')) misPuntos += 3;
@@ -2115,7 +2250,7 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
       }
       await db.query('COMMIT');
     }
-    res.json({ message: 'Simulación completada.' });
+    res.json({ message: 'Simulación completada con Narrativa hiper-realista.' });
   } catch (err) {
     await db.query('ROLLBACK');
     console.error("Error Simulación:", err);
