@@ -1435,9 +1435,9 @@ router.post('/:id_liga/tienda/abrir-ultra', verifyToken, async (req, res) => {
     const suerte = Math.random() * 100;
     let tipoTocado = 'normal';
     
-    if (suerte < 8) {
+    if (suerte < 10) {
       tipoTocado = 'ultra'; // ¡Día de suerte!
-    } else if (suerte < 27) {
+    } else if (suerte < 30) {
       tipoTocado = 'especial';
     }
 
