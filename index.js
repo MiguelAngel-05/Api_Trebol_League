@@ -874,7 +874,7 @@ mercadoRouter.post('/compra-directa', verifyToken, async (req, res) => {
 router.post('/:id_liga/tienda/abrir-normal', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const id_user = req.user.id;
-  const precioSobre = 10000000; // 10 Millones
+  const precioSobre = 5000000; // 5 Millones
 
   try {
     await db.query('BEGIN'); // Empezamos transacción segura
@@ -951,7 +951,7 @@ router.post('/:id_liga/tienda/abrir-posicion', verifyToken, async (req, res) => 
   const { id_liga } = req.params;
   const { posicion } = req.body; 
   const id_user = req.user.id;
-  const precioSobre = 15000000;
+  const precioSobre = 10000000;
 
   if (!posicion) return res.status(400).json({ message: 'Posición no especificada.' });
 
@@ -1028,7 +1028,7 @@ router.post('/:id_liga/tienda/abrir-posicion', verifyToken, async (req, res) => 
 router.post('/:id_liga/tienda/abrir-especial', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const id_user = req.user.id;
-  const precioSobre = 25000000; // 25 Millones de Tc
+  const precioSobre = 20000000; // 20 Millones de Tc
 
   try {
     await db.query('BEGIN');
@@ -1112,7 +1112,7 @@ router.post('/:id_liga/tienda/abrir-especial', verifyToken, async (req, res) => 
 router.post('/:id_liga/tienda/abrir-ultra', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const id_user = req.user.id;
-  const precioSobre = 50000000; // 50 Millones de Tc
+  const precioSobre = 30000000; // 30 Millones de Tc
 
   try {
     await db.query('BEGIN'); // Transacción segura
@@ -1124,7 +1124,7 @@ router.post('/:id_liga/tienda/abrir-ultra', verifyToken, async (req, res) => {
     );
 
     if (userRes.rows.length === 0 || Number(userRes.rows[0].dinero) < precioSobre) {
-      throw new Error('Fondos insuficientes para el Sobre Ultra (50M Tc).');
+      throw new Error('Fondos insuficientes para el Sobre Ultra (30M Tc).');
     }
 
     // 2. TIRADA DE RAREZA (Probabilidades: 5% Ultra, 25% Especial, 70% Normal)
