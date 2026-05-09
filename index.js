@@ -746,6 +746,25 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       currentDate.setDate(currentDate.getDate() + 5); 
     }
 
+    // =======================================================
+    // 7. EL MERCADO INICIAL (El Saque de Centro)
+    // =======================================================
+    const mercadoInicial = await db.query(`
+      WITH Disponibles AS (
+        SELECT id_futbolista, TRIM(UPPER(posicion)) as pos_limpia,
+               ROW_NUMBER() OVER(PARTITION BY TRIM(UPPER(posicion)) ORDER BY RANDOM()) as rn,
+               RANDOM() as rnd
+        FROM futbolistas 
+        WHERE equipo != 'Real Trébol FC' AND tipo_carta = 'normal' 
+          AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $1)
+      )
+      SELECT id_futbolista FROM Disponibles ORDER BY CASE WHEN rn <= 4 THEN 0 ELSE 1 END, rnd LIMIT 20
+    `, [id_liga]);
+
+    for (const j of mercadoInicial.rows) {
+      await db.query('INSERT INTO mercado_liga (id_liga, id_futbolista, fecha_generacion) VALUES ($1, $2, NOW())', [id_liga, j.id_futbolista]);
+    }
+
     await db.query('COMMIT');
     res.json({ message: '¡Liga generada! Dinero y plantillas repartidas con éxito. 📅⚽' });
 
@@ -1986,6 +2005,91 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
     await db.query('ROLLBACK');
     console.error("Error Simulación:", err);
     res.status(500).json({ error: 'Fallo brutal en el motor' });
+  }
+});
+
+// =================================================================
+// 💰 CRON JOB: REPARTO DE PREMIOS POR JORNADA (Biwenger Style)
+// =================================================================
+app.get('/api/cron/premios-jornada', async (req, res) => {
+  const authHeader = req.headers.authorization;
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ error: 'No autorizado' });
+
+  try {
+    await db.query('BEGIN');
+    
+    // 1. Buscamos jornadas donde TODOS los partidos estén finalizados y NO se hayan pagado aún
+    const jornadasPagar = await db.query(`
+      SELECT id_liga, jornada
+      FROM partidos
+      GROUP BY id_liga, jornada
+      HAVING bool_and(estado = 'finalizado') AND bool_and(premios_pagados = false)
+    `);
+
+    if (jornadasPagar.rows.length === 0) {
+      await db.query('ROLLBACK');
+      return res.json({ message: 'No hay jornadas pendientes de pago.' });
+    }
+
+    for (const j of jornadasPagar.rows) {
+      const { id_liga, jornada } = j;
+      
+      // 2. Obtener el ranking exacto de esa jornada
+      const ranking = await db.query(`
+        SELECT ul.id_user, u.username, COALESCE(SUM(rp.puntos_totales), 0) as puntos_jornada
+        FROM users_liga ul
+        JOIN users u ON ul.id_user = u.id
+        LEFT JOIN rendimiento_partido rp ON rp.id_user = ul.id_user 
+        LEFT JOIN partidos p ON rp.id_partido = p.id_partido AND p.jornada = $2
+        WHERE ul.id_liga = $1
+        GROUP BY ul.id_user, u.username
+        ORDER BY puntos_jornada DESC
+      `, [id_liga, jornada]);
+
+      let mensajeChat = `🏆 ¡PREMIOS DE LA JORNADA ${jornada} REPARTIDOS! 🏆\n\n`;
+
+      // 3. Repartir los maletines de dinero
+      for (let i = 0; i < ranking.rows.length; i++) {
+        const manager = ranking.rows[i];
+        const puntos = Number(manager.puntos_jornada);
+        
+        // Base: 100.000 Tc por cada punto conseguido
+        let premio = puntos * 100000;
+        
+        // Bonus por podio de jornada
+        if (i === 0) premio += 3000000;      // 1º: +3 Millones
+        else if (i === 1) premio += 2000000; // 2º: +2 Millones
+        else if (i === 2) premio += 1000000; // 3º: +1 Millón
+
+        if (premio > 0) {
+          // Ingresar dinero
+          await db.query('UPDATE users_liga SET dinero = dinero + $1 WHERE id_user = $2 AND id_liga = $3', [premio, manager.id_user, id_liga]);
+          
+          // Construir el mensaje del podio para el chat
+          if (i < 3) {
+             const medalla = i === 0 ? '🥇' : (i === 1 ? '🥈' : '🥉');
+             mensajeChat += `${medalla} ${manager.username}: ${puntos} pts (+${new Intl.NumberFormat('es-ES').format(premio)} Tc)\n`;
+          }
+        }
+      }
+
+      // 4. Marcar la jornada entera como pagada para no repetir el pago mañana
+      await db.query('UPDATE partidos SET premios_pagados = true WHERE id_liga = $1 AND jornada = $2', [id_liga, jornada]);
+
+      // 5. El Owner hace el anuncio oficial en el Chat General
+      await db.query(`
+        INSERT INTO chat_general (id_liga, id_user, mensaje) 
+        VALUES ($1, (SELECT id_user FROM users_liga WHERE id_liga = $1 AND rol = 'owner' LIMIT 1), $2)
+      `, [id_liga, mensajeChat]);
+    }
+
+    await db.query('COMMIT');
+    res.json({ message: 'Premios repartidos con éxito y anunciados en el chat.' });
+
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error("Error en reparto de premios:", err);
+    res.status(500).json({ error: 'Fallo al repartir los premios' });
   }
 });
 
