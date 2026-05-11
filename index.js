@@ -630,6 +630,11 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       throw new Error('No hay suficientes equipos en la base de datos para jugar.');
     }
 
+    for (let i = equipos.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [equipos[i], equipos[j]] = [equipos[j], equipos[i]];
+    }
+
     if (equipos.length % 2 !== 0) equipos.push('DESCANSA'); 
 
     const totalEquipos = equipos.length;
