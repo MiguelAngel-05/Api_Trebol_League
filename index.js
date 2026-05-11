@@ -506,16 +506,32 @@ router.get('/:id_liga/club/:nombre_club', verifyToken, async (req, res) => {
           WHERE p.id_liga = $1 AND tipo_evento = 'roja' 
           GROUP BY id_futbolista
       ) rojas ON f.id_futbolista = rojas.id_futbolista
-      WHERE f.equipo = $2
+      WHERE f.equipo = $2 AND f.tipo_carta = 'normal'
       ORDER BY f.media DESC
     `, [id_liga, nombre_club]);
 
     const lores = {
-      'Real Trébol FC': 'Los Dioses fundadores de la liga. Invencibles en su estadio.',
-      'Motor Club Chacón': 'Velocidad, gasolina y rock n roll. Su ataque es temible.',
-      'Athletic Hullera': 'Mineros duros de roer. Su defensa es un muro de piedra.',
-      'Deportivo Relámpago': 'El equipo del pueblo, conocido por sus contraataques fugaces.',
-      'Real Pinar FC': 'Los reyes del bosque. Fútbol elegante y de toque.'
+      'Real Trébol FC': 'Los Dioses fundadores de la liga. Invencibles en su estadio y con un presupuesto infinito.',
+      'Motor Club Chacón': 'Velocidad, gasolina y rock n roll. Su ataque es temible y su afición ruidosa.',
+      'Athletic Hullera': 'Mineros duros de roer. Su defensa es un muro de piedra forjado en las profundidades.',
+      'Deportivo Relámpago': 'El equipo del pueblo, conocido por sus contraataques fugaces y su garra.',
+      'Real Pinar FC': 'Los reyes del bosque. Fútbol elegante, de toque y máximo respeto al balón.',
+      'Neón City FC': 'Fútbol futurista bajo las luces de la gran ciudad. Juego rápido y tecnológico.',
+      'Pixel United': 'Precisión milimétrica en cada pase. Construyen el juego bloque a bloque.',
+      'CF Átomo': 'Pequeños pero explosivos. Un equipo con una energía inagotable los 90 minutos.',
+      'Club Náutico Brisamar': 'Juegan al ritmo de las olas. Un fútbol fluido y refrescante.',
+      'Racing Vaguadas': 'Especialistas en barrizales y partidos trabados. Nunca dan un balón por perdido.',
+      'UD Recreo': 'La alegría de la liga. Siempre ofensivos, siempre buscando el espectáculo.',
+      'Alianza Metropolitana': 'El orden táctico hecho equipo. Una máquina perfectamente engrasada.',
+      'Gourmet FC': 'Fútbol exquisito para paladares finos. Solo aceptan la victoria con estilo.',
+      'Cosmos United': 'Un equipo de otra galaxia. Estrellas brillantes con un fútbol espacial.',
+      'Dragones de Oriente': 'Místicos y letales. Cuando despiertan, su fuego arrasa con cualquier defensa.',
+      'CD Refugio': 'Su estadio es un fortín inexpugnable. Nadie sale vivo de su valle.',
+      'Unión Fortaleza': 'Disciplina militar. Una defensa de hierro que nadie ha logrado romper este año.',
+      'CD Frontera': 'Guerreros del límite. Expertos en ganar partidos en el último suspiro.',
+      'Sporting Lechuza': 'Cazan de noche. Sus mejores resultados siempre llegan bajo los focos.',
+      'Titanes CF': 'Gigantes del área. Dominan el juego aéreo como nadie en Isla Trébol.',
+      'Pangea FC': 'Fuerza de la naturaleza. Un equipo que une a todos los continentes del fútbol.'
     };
 
     res.json({
@@ -1817,6 +1833,24 @@ const FRASES = {
     "🚑 Terrible lance. {jugador} ha chocado rodilla con rodilla y pide el cambio al instante. Posible {lesion}.",
     "🚑 ¡Madre mía qué grito ha pegado! El estadio entero se ha callado. {jugador} no puede apoyar el pie tras sufrir {lesion}."
   ],
+  cambios: [
+      "🔄 Mueve el banquillo el míster. Abandona el terreno de juego {sale} y salta al césped {entra} con ganas de demostrar.",
+      "🔄 ¡Cambio táctico! Se retira {sale} tras un gran desgaste físico y entra de refresco {entra}.",
+      "🔄 Piernas frescas para el equipo. El entrenador da entrada a {entra} en sustitución de {sale}.",
+      "🔄 ¡Aplausos en la grada! Despiden a {sale} por su esfuerzo y reciben con ánimos a {entra}.",
+      "🔄 Sangre nueva al verde. {sale} deja su sitio a {entra}, buscando agitar el partido.",
+      "🔄 Se produce la sustitución. Veremos qué aporta {entra}, que entra motivadísimo para darle descanso a {sale}.",
+      "🔄 El míster busca soluciones en la pizarra. Se marcha {sale} y le toca el turno a {entra}.",
+      "🔄 ¡Agita el árbol el técnico! {entra} pisa el césped chocando las manos con {sale}."
+    ],
+    cambiosOfensivos: [
+      "🔄 ¡A por el partido! El míster ve que van perdiendo y saca del campo a {sale} para meter más pólvora con {entra}.",
+      "🔄 Cambio a la desesperada. {sale} deja el césped y entra {entra} con la misión clara de remontar esto."
+    ],
+    cambiosCastigo: [
+      "🔄 El técnico no está nada contento con el partido de {sale} y lo cambia de inmediato. Entra {entra} en su lugar.",
+      "🔄 Cambio preventivo del entrenador. Saca a {sale}, que estaba jugando con fuego tras la amarilla, y da entrada a {entra}."
+    ],
   amarillas: [
     "🟨 ¡Menudo hachazo! El árbitro le saca la amarilla a {jugador} y da gracias que no sea de otro color.",
     "🟨 Amarilla clarísima para {jugador}. Se tiró con los tacos por delante a cortar un contragolpe letal.",
@@ -2222,6 +2256,69 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
 
             eventos.push({ minuto: minReal, tipo_evento: 'info', id_futbolista: null, descripcion: fraseInfo });
           }
+        }
+
+        // La IA piensa en hacer cambios entre el minuto 35 y 55 reales (min 45 a 65 del bucle)
+        if (!eventoImportanteOcurrido && minuto > 45 && minuto < 65 && Math.random() < 0.10) {
+          
+          [local, visit].forEach(equipo => {
+            if (equipo.banquillo.length > 0 && equipo.cambiosHechos < 5) {
+              
+              const isLocal = equipo === local;
+              const golesEquipo = isLocal ? golesLocal : golesVisit;
+              const golesRival = isLocal ? golesVisit : golesLocal;
+              const perdiendo = golesEquipo < golesRival;
+
+              // Analizamos a los titulares en el campo
+              let candidatoSalir = null;
+              let motivoCambio = 'normal';
+
+              // Si van perdiendo, buscan quitar a alguien al azar para buscar la remontada
+              if (perdiendo && Math.random() < 0.6) {
+                candidatoSalir = equipo.titulares[Math.floor(Math.random() * equipo.titulares.length)];
+                motivoCambio = 'ofensivo';
+              } 
+              // Si no van perdiendo, miran si hay alguien amonestado
+              else {
+                const amonestados = equipo.titulares.filter(j => statsPartido[j.id_futbolista].amarillas > 0);
+                if (amonestados.length > 0 && Math.random() < 0.5) {
+                  candidatoSalir = amonestados[Math.floor(Math.random() * amonestados.length)];
+                  motivoCambio = 'castigo';
+                } 
+                // Cambio normal de refresco
+                else if (Math.random() < 0.3) {
+                  candidatoSalir = equipo.titulares[Math.floor(Math.random() * equipo.titulares.length)];
+                  motivoCambio = 'normal';
+                }
+              }
+
+              // Si la IA ha decidido hacer el cambio
+              if (candidatoSalir) {
+                const entra = equipo.banquillo.shift();
+                
+                equipo.titulares = equipo.titulares.filter(j => j.id_futbolista !== candidatoSalir.id_futbolista);
+                equipo.titulares.push(entra);
+                
+                statsPartido[entra.id_futbolista].jugo = true;
+                equipo.cambiosHechos++;
+
+                let diccionarioFrases = FRASES.cambios;
+                if (motivoCambio === 'ofensivo') diccionarioFrases = FRASES.cambiosOfensivos;
+                if (motivoCambio === 'castigo') diccionarioFrases = FRASES.cambiosCastigo;
+
+                const fraseCambio = narrar(diccionarioFrases, { entra: entra.nombre, sale: candidatoSalir.nombre });
+
+                eventos.push({ 
+                  minuto: minReal, 
+                  tipo_evento: 'cambio', 
+                  id_futbolista: entra.id_futbolista, 
+                  descripcion: fraseCambio 
+                });
+                
+                eventoImportanteOcurrido = true;
+              }
+            }
+          });
         }
       }
 
