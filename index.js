@@ -735,9 +735,14 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       `, [id_liga, j.id_futbolista]);
     }
 
+    //Redondear todos los valores de mercado
+    await db.query(`
+        UPDATE futbolistas 
+        SET precio = ROUND(precio / 100000.0) * 100000
+    `);
+
     await db.query('COMMIT');
     res.json({ message: '¡Liga generada! Dinero y plantillas repartidas con éxito. 📅⚽' });
-
   } catch (err) {
     await db.query('ROLLBACK');
     console.error("Error generando calendario:", err);
@@ -2237,7 +2242,11 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
           let nuevaMedia = st.media;
           if (st.nota_final > 7.5 && Math.random() < ((100 - st.media) / 100)) nuevaMedia = Math.min(94, nuevaMedia + 1);
           if (st.nota_final < 4.0 && Math.random() < 0.3) nuevaMedia = Math.max(60, nuevaMedia - 1);
-          let nuevoPrecio = Math.min(50000000, Math.max(1000000, Math.floor(Math.pow(1.15, nuevaMedia - 60) * 1000000)));
+          
+          //Redondeo
+          let precioBase = Math.min(50000000, Math.max(1000000, Math.floor(Math.pow(1.15, nuevaMedia - 60) * 1000000)));
+          let nuevoPrecio = Math.round(precioBase / 100000) * 100000;
+
           await db.query(`UPDATE futbolistas SET media = $1, precio = $2 WHERE id_futbolista = $3`, [nuevaMedia, nuevoPrecio, st.id_futbolista]);
         }
       }
