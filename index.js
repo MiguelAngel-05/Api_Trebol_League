@@ -2237,9 +2237,9 @@ router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
       ORDER BY ul.puntos DESC, u.username ASC
     `, [id_liga]);
     res.json(result.rows);
-  } catch (err) {
+  } catch(err) {
     console.error(err);
-    res.status(500).json({ message: 'Error cargando clasificación' });
+    res.status(500).json({message: 'Error cargando clasificación general'});
   }
 });
 
