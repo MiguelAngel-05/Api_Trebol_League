@@ -1879,7 +1879,7 @@ const REQ_FORMACION = {
 // =================================================================
 app.get('/api/cron/simular-partidos', async (req, res) => {
   const authHeader = req.headers.authorization;
-  //if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ error: 'No autorizado' });
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ error: 'No autorizado' });
 
   // --- DICCIONARIO DE FRASES DEL COMENTARISTA ---
   const FRASES = {
