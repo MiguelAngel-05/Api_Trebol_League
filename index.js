@@ -6,7 +6,7 @@ const db = require('./db');
 const cors = require('cors');
 
 const app = express();
-const secretKey = 'your-secret-key'; // Recuerda cambiar esto en producción por una variable de entorno
+const secretKey = 'your-secret-key'; 
 
 const mercadoRouter = express.Router();
 
@@ -2227,22 +2227,19 @@ app.get('/api/cron/premios-jornada', async (req, res) => {
 router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   try {
-    // Unimos los usuarios con sus puntos en users_liga para sacar el ranking oficial
-    const query = `
+    const result = await db.query(`
       SELECT 
-        u.username AS equipo, 
-        ul.puntos AS puntos_totales,
-        ul.dinero AS presupuesto
+        u.id, u.username, u.avatar, ul.puntos, ul.rol, ul.dinero as presupuesto,
+        (SELECT COUNT(*) FROM futbolista_user_liga ful WHERE ful.id_user = u.id AND ful.id_liga = $1) as total_jugadores
       FROM users_liga ul
       JOIN users u ON ul.id_user = u.id
       WHERE ul.id_liga = $1
-      ORDER BY ul.puntos DESC, ul.dinero DESC;
-    `;
-    const clasificacion = await db.query(query, [id_liga]);
-    res.json(clasificacion.rows);
-  } catch(err) {
+      ORDER BY ul.puntos DESC, u.username ASC
+    `, [id_liga]);
+    res.json(result.rows);
+  } catch (err) {
     console.error(err);
-    res.status(500).json({message: 'Error cargando clasificación general'});
+    res.status(500).json({ message: 'Error cargando clasificación' });
   }
 });
 
