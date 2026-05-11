@@ -2091,11 +2091,13 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
                 equipo.titulares.push(entra);
                 statsPartido[entra.id_futbolista].jugo = true;
                 equipo.cambiosHechos++;
-                eventos.push({ minuto: 'HT', tipo_evento: 'cambio', id_futbolista: entra.id_futbolista, descripcion: `🔄 Mueve el banquillo el míster al descanso: Se retira ${sale.nombre} y salta al verde ${entra.nombre}.` });
+                eventos.push({ minuto: 30, tipo_evento: 'cambio', id_futbolista: entra.id_futbolista, descripcion: `🔄 Cambio táctico al descanso: Entra ${entra.nombre}, sale ${sale.nombre}.` });
               }
             });
           }
-          if (minuto === 40) eventos.push({ minuto: 41, tipo_evento: 'info', id_futbolista: null, descripcion: '⚽ Rueda de nuevo el esférico. ¡Arranca la segunda mitad!' });
+          if (minuto === 40) {
+            eventos.push({ minuto: 31, tipo_evento: 'info', id_futbolista: null, descripcion: '⚽ Rueda de nuevo el esférico. ¡Arranca la segunda mitad!' });
+          }
           continue; 
         }
 
