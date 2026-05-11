@@ -1875,13 +1875,13 @@ const REQ_FORMACION = {
 };
 
 // =================================================================
-// 🎮 CRON JOB: MOTOR DE SIMULACIÓN DE PARTIDOS V4 (NARRADOR HIPER-REALISTA)
+// 🎮 CRON JOB: MOTOR DE SIMULACIÓN DE PARTIDOS V5 (MULTIVERSO ARREGLADO)
 // =================================================================
 app.get('/api/cron/simular-partidos', async (req, res) => {
   const authHeader = req.headers.authorization;
   if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) return res.status(401).json({ error: 'No autorizado' });
 
-  // --- DICCIONARIO DE FRASES DEL COMENTARISTA ---
+  // --- DICCIONARIO DE FRASES DEL COMENTARISTA (MODO ULTRA INTENSO) ---
   const FRASES = {
     golesSolo: [
       "¡GOOOOOOOLAAAAAAAAAAAAAZO DE {goleador}! ¡Le pegó con el alma y la mandó a guardar!",
@@ -1976,7 +1976,6 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
     ]
   };
 
-  // Función para rellenar las variables en las frases
   const narrar = (arrayFrases, vars) => {
     let frase = arrayFrases[Math.floor(Math.random() * arrayFrases.length)];
     for (const key in vars) {
@@ -1994,7 +1993,8 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
     for (const partido of partidosRes.rows) {
       await db.query('BEGIN');
       
-      const jugRes = await db.query(`SELECT * FROM futbolistas WHERE equipo IN ($1, $2) AND partidos_lesion = 0 AND partidos_sancion = 0`, [partido.equipo_local, partido.equipo_visitante]);
+      // TRUCO 1: La IA SOLO convoca a las cartas 'normales'. Así no hay clones en el campo.
+      const jugRes = await db.query(`SELECT * FROM futbolistas WHERE equipo IN ($1, $2) AND partidos_lesion = 0 AND partidos_sancion = 0 AND tipo_carta = 'normal'`, [partido.equipo_local, partido.equipo_visitante]);
 
       const armarEquipo = (nombreEquipo) => {
         const plantilla = jugRes.rows.filter(j => j.equipo === nombreEquipo).sort((a, b) => ((b.media * 0.7) + (b.forma_actual * 3)) - ((a.media * 0.7) + (a.forma_actual * 3)));
@@ -2052,7 +2052,7 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
         const minReal = minuto > 40 ? minuto - 10 : minuto;
         let eventoImportanteOcurrido = false;
 
-        // GOLES (6% chance)
+        // GOLES
         if (Math.random() < 0.06) {
           const atacaLocal = Math.random() < 0.5;
           const atacante = atacaLocal ? local : visit;
@@ -2076,7 +2076,7 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
           }
         }
 
-        // LESIONES (1% chance)
+        // LESIONES
         if (!eventoImportanteOcurrido && Math.random() < 0.01) {
           const sufreLesion = Math.random() < 0.5 ? local : visit;
           if (sufreLesion.titulares.length > 0) {
@@ -2101,7 +2101,7 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
           }
         }
 
-        // TARJETAS (4% chance)
+        // TARJETAS
         if (!eventoImportanteOcurrido && Math.random() < 0.04) {
           const equipoFalta = Math.random() < 0.5 ? local : visit;
           if (equipoFalta.titulares.length > 0) {
@@ -2126,7 +2126,7 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
           }
         }
 
-        // NARRACIÓN DE RELLENO (Si no hubo gol, ni lesión, ni tarjeta -> 15% chance de jugada inmersiva)
+        // NARRACIÓN DE RELLENO
         if (!eventoImportanteOcurrido && Math.random() < 0.15) {
           const atacaLocal = Math.random() < 0.5;
           const equipoAtacante = atacaLocal ? local : visit;
@@ -2161,17 +2161,19 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
         if (st.equipo === partido.equipo_visitante && golesLocal === 0 && (st.posicion === 'DF' || st.posicion === 'PT')) nota += 1.5;
         st.nota_final = Math.max(0, Math.min(10, nota)).toFixed(1);
 
-        if (st.lesion_sufrida) await db.query(`UPDATE futbolistas SET estado_lesion = $1, partidos_lesion = $2 WHERE id_futbolista = $3`, [st.lesion_sufrida.tipo, st.lesion_sufrida.dias, st.id_futbolista]);
-        if (st.rojas > 0) await db.query(`UPDATE futbolistas SET partidos_sancion = $1 WHERE id_futbolista = $2`, [Math.floor(Math.random() * 4) + 1, st.id_futbolista]);
+        // TRUCO 2: Aplicamos lesiones, rojas y forma a TODOS los que tengan ese nombre (Normales, Especiales, Ultras)
+        if (st.lesion_sufrida) await db.query(`UPDATE futbolistas SET estado_lesion = $1, partidos_lesion = $2 WHERE nombre = $3`, [st.lesion_sufrida.tipo, st.lesion_sufrida.dias, st.nombre]);
+        if (st.rojas > 0) await db.query(`UPDATE futbolistas SET partidos_sancion = $1 WHERE nombre = $2`, [Math.floor(Math.random() * 4) + 1, st.nombre]);
+        
+        await db.query(`UPDATE futbolistas SET forma_actual = $1 WHERE nombre = $2`, [st.nota_final, st.nombre]);
 
+        // La fluctuación de media y precio solo afecta a las normales (por simplicidad del mercado)
         if (st.tipo_carta !== 'ultra') {
           let nuevaMedia = st.media;
           if (st.nota_final > 7.5 && Math.random() < ((100 - st.media) / 100)) nuevaMedia = Math.min(94, nuevaMedia + 1);
           if (st.nota_final < 4.0 && Math.random() < 0.3) nuevaMedia = Math.max(60, nuevaMedia - 1);
           let nuevoPrecio = Math.min(50000000, Math.max(1000000, Math.floor(Math.pow(1.15, nuevaMedia - 60) * 1000000)));
-          await db.query(`UPDATE futbolistas SET forma_actual = $1, media = $2, precio = $3 WHERE id_futbolista = $4`, [st.nota_final, nuevaMedia, nuevoPrecio, st.id_futbolista]);
-        } else {
-          await db.query(`UPDATE futbolistas SET forma_actual = $1 WHERE id_futbolista = $2`, [st.nota_final, st.id_futbolista]);
+          await db.query(`UPDATE futbolistas SET media = $1, precio = $2 WHERE id_futbolista = $3`, [nuevaMedia, nuevoPrecio, st.id_futbolista]);
         }
       }
 
@@ -2180,9 +2182,10 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
         await db.query(`INSERT INTO eventos_partido (id_partido, minuto, tipo_evento, id_futbolista, id_asistente, descripcion) VALUES ($1, $2, $3, $4, $5, $6)`, [partido.id_partido, ev.minuto, ev.tipo_evento, ev.id_futbolista, ev.id_asistente, ev.descripcion]);
       }
 
+      // --- PUNTOS FANTASY + MAGIA HABILIDADES ---
       const mánagers = await db.query(`SELECT DISTINCT id_user FROM users_liga WHERE id_liga = $1`, [partido.id_liga]);
       for (const man of mánagers.rows) {
-        const suPlantilla = await db.query(`SELECT ful.*, f.codigo_habilidad FROM futbolista_user_liga ful JOIN futbolistas f ON ful.id_futbolista = f.id_futbolista WHERE ful.id_user = $1 AND ful.id_liga = $2 AND ful.es_titular = true`, [man.id_user, partido.id_liga]);
+        const suPlantilla = await db.query(`SELECT ful.*, f.nombre, f.codigo_habilidad FROM futbolista_user_liga ful JOIN futbolistas f ON ful.id_futbolista = f.id_futbolista WHERE ful.id_user = $1 AND ful.id_liga = $2 AND ful.es_titular = true`, [man.id_user, partido.id_liga]);
         let puntosTotalesManager = 0;
 
         const jugador12 = suPlantilla.rows.find(j => j.hueco_plantilla === 'hueco-12');
@@ -2193,7 +2196,12 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
 
         for (const mio of suPlantilla.rows) {
           if (mio.hueco_plantilla === 'hueco-12') continue;
-          const st = statsPartido[mio.id_futbolista];
+          
+          // TRUCO 3: Buscamos las estadísticas del partido por NOMBRE, no por ID.
+          // Así, si el mánager alineó a "Carlos Chacón (Ultra)", coge los stats del "Carlos Chacón (Normal)" que jugó el partido.
+          const stArray = Object.values(statsPartido);
+          const st = stArray.find(s => s.nombre === mio.nombre);
+
           if (st && st.jugo) {
             const hab = mio.codigo_habilidad;
             let misPuntos = Math.round(parseFloat(st.nota_final));
@@ -2212,7 +2220,7 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
 
             if (hab === 'HabEspecial_Egoista' && st.goles > 0 && st.goles === golesEquipo) misPuntos += 10;
             if (hab === 'HabEspecial_EfectoBolaNieve') misPuntos += golesEquipo;
-            if (hab === 'HabEspecial_HeroeAgonico' && win && eventos.some(e => e.id_futbolista === mio.id_futbolista && e.minuto >= 50 && e.tipo_evento === 'gol')) misPuntos += 8;
+            if (hab === 'HabEspecial_HeroeAgonico' && win && eventos.some(e => e.id_futbolista === st.id_futbolista && e.minuto >= 50 && e.tipo_evento === 'gol')) misPuntos += 8;
             if (hab === 'HabEspecial_CerrojoAbsoluto' && golesRival === 0) misPuntos = Math.round(misPuntos * 1.5);
             if (hab === 'HabEspecial_SalvadorAlambre' && win && (golesEquipo - golesRival === 1)) misPuntos += 7;
             if (hab === 'HabEspecial_TodoONada') { misPuntos = win ? misPuntos * 2 : 0; }
@@ -2242,6 +2250,8 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
             if (ultraCode === 'HabUltra_Churumbel') misPuntos += 5;
 
             misPuntos = Math.round(misPuntos);
+            
+            // IMPORTANTE: Guardamos el rendimiento vinculándolo al ID de TU CARTA (la especial/ultra), para que salga bien en tu app.
             await db.query(`INSERT INTO rendimiento_partido (id_partido, id_futbolista, id_user, nota_base, puntos_totales, goles, asistencias, amarillas, rojas) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [partido.id_partido, mio.id_futbolista, man.id_user, st.nota_final, misPuntos, st.goles, st.asistencias, st.amarillas, st.rojas]);
             puntosTotalesManager += misPuntos;
           }
@@ -2250,7 +2260,7 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
       }
       await db.query('COMMIT');
     }
-    res.json({ message: 'Simulación completada con Narrativa hiper-realista.' });
+    res.json({ message: 'Simulación completada con Multiverso corregido.' });
   } catch (err) {
     await db.query('ROLLBACK');
     console.error("Error Simulación:", err);
