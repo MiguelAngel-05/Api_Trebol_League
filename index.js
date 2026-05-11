@@ -585,10 +585,10 @@ app.put('/api/perfil', verifyToken, async (req, res) => {
 // Generar el calendario de la liga y configurar la temporada
 router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
   const { id_liga } = req.params;
-  const { dineroInicial, darPlantilla } = req.body;
+  const { dineroInicial, darPlantilla } = req.body; 
 
   try {
-    await db.query('BEGIN');
+    await db.query('BEGIN'); 
 
     // Comprobar si ya hay partidos generados
     const checkPartidos = await db.query('SELECT id_partido FROM partidos WHERE id_liga = $1 LIMIT 1', [id_liga]);
@@ -596,13 +596,15 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       throw new Error('La liga ya tiene un calendario generado.');
     }
 
-    // Reparto económico, asignar el presupuesto inicial a todos los mánagers
+    // Asignar el presupuesto inicial a todos los mánagers
     if (dineroInicial !== undefined) {
       await db.query('UPDATE users_liga SET dinero = $1 WHERE id_liga = $2', [dineroInicial, id_liga]);
     }
 
     // Reparto de plantillas
     if (darPlantilla) {
+      await db.query('DELETE FROM futbolista_user_liga WHERE id_liga = $1', [id_liga]);
+
       const usersRes = await db.query('SELECT id_user FROM users_liga WHERE id_liga = $1', [id_liga]);
       
       const shuffleArray = (array) => {
@@ -613,22 +615,20 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
         return array;
       };
 
-      // Creamos la plantilla base con: 1 PT, 4 DF, 3 MC, 3 DL
       for (const u of usersRes.rows) {
         let posiciones = ['PT', 'DF', 'DF', 'DF', 'DF', 'MC', 'MC', 'MC', 'DL', 'DL', 'DL'];
         posiciones = shuffleArray(posiciones); 
 
         const buckets = [
-          { mMin: 60, mMax: 65, cant: 8 },
-          { mMin: 66, mMax: 70, cant: 2 },
-          { mMin: 75, mMax: 80, cant: 1 }
+          { mMin: 60, mMax: 65, cant: 8 }, 
+          { mMin: 66, mMax: 70, cant: 2 }, 
+          { mMin: 75, mMax: 80, cant: 1 }  
         ];
 
         for (const bucket of buckets) {
           for (let i = 0; i < bucket.cant; i++) {
             const posActual = posiciones.shift(); 
             
-            // Buscar un jugador libre con esa media y esa posición
             const player = await db.query(`
               SELECT id_futbolista FROM futbolistas 
               WHERE media BETWEEN $1 AND $2 
@@ -639,7 +639,6 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
               ORDER BY RANDOM() LIMIT 1
             `, [bucket.mMin, bucket.mMax, posActual, id_liga]);
 
-            // Si hay un jugador disponible, se lo damos directo al banquillo
             if (player.rows.length > 0) {
               await db.query(`
                 INSERT INTO futbolista_user_liga (id_user, id_liga, id_futbolista, es_titular, hueco_plantilla, en_venta, precio_venta) 
@@ -651,7 +650,7 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       }
     }
 
-    // Preparar el calendario 
+    // Preparar calendario
     const teamsRes = await db.query("SELECT DISTINCT equipo FROM futbolistas WHERE equipo != 'Real Trébol FC'");
     let equipos = teamsRes.rows.map(row => row.equipo);
 
@@ -659,7 +658,6 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       throw new Error('No hay suficientes equipos en la base de datos para jugar.');
     }
 
-    // Si los equipos son impares, añadimos un equipo fantasma para los descansos
     if (equipos.length % 2 !== 0) equipos.push('DESCANSA'); 
 
     const totalEquipos = equipos.length;
@@ -667,7 +665,7 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
     const partidosPorJornada = totalEquipos / 2;
     let calendario = [];
 
-    // Reparto de los partidos por jornada
+    // Asignación de partidos
     let equiposRotatorios = [...equipos];
     const equipoFijo = equiposRotatorios.shift(); 
 
@@ -680,7 +678,6 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       for (let i = 0; i < partidosPorJornada - 1; i++) {
         calendario.push({ jornada, local: equiposRotatorios[i], visitante: equiposRotatorios[equiposRotatorios.length - 2 - i] });
       }
-      // Rotamos los equipos (El último pasa a ser el primero del array rotatorio)
       equiposRotatorios.unshift(equiposRotatorios.pop());
     }
 
@@ -693,9 +690,7 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       }
     }
 
-    // Reparto de horarios y descansos
-    
-    // Empieza exactamente en 1 semana (7 días)
+    // Reparto de días (Fechas, Horas y Descansos)
     let currentDate = new Date();
     currentDate.setDate(currentDate.getDate() + 7); 
     currentDate.setHours(0, 0, 0, 0);
@@ -713,10 +708,8 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
     const totalJornadas = totalJornadasIda * 2;
 
     for (let jornada = 1; jornada <= totalJornadas; jornada++) {
-      // Ignoramos los partidos donde alguien descansa
       let partidosJornada = calendario.filter(p => p.jornada === jornada && p.local !== 'DESCANSA' && p.visitante !== 'DESCANSA');
       
-      // Reparto de 10 partidos en 3 días (si hay 20 equipos)
       const distribucion = [3, 3, 4]; 
       let partidoIndex = 0;
 
@@ -731,7 +724,6 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
             const fechaPartido = new Date(currentDate);
             fechaPartido.setDate(fechaPartido.getDate() + dayOffset);
             
-            // Asignamos el horario al azar usando el módulo para no quedarnos sin slots
             const slotAsignado = slotsHoy[i % slotsHoy.length];
             fechaPartido.setHours(slotAsignado.h, slotAsignado.m, 0, 0); 
 
@@ -744,11 +736,12 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
           }
         }
       }
-      // Sumamos 5 días para la siguiente jornada
       currentDate.setDate(currentDate.getDate() + 5); 
     }
 
-    // Mercado inicial para el primer día 
+    // Mercado inicial
+    await db.query('DELETE FROM mercado_liga WHERE id_liga = $1', [id_liga]);
+
     const mercadoInicial = await db.query(`
       WITH Disponibles AS (
         SELECT id_futbolista, TRIM(UPPER(posicion)) as pos_limpia,
@@ -762,7 +755,11 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
     `, [id_liga]);
 
     for (const j of mercadoInicial.rows) {
-      await db.query('INSERT INTO mercado_liga (id_liga, id_futbolista, fecha_generacion) VALUES ($1, $2, NOW())', [id_liga, j.id_futbolista]);
+      await db.query(`
+        INSERT INTO mercado_liga (id_liga, id_futbolista, fecha_generacion) 
+        VALUES ($1, $2, NOW()) 
+        ON CONFLICT DO NOTHING
+      `, [id_liga, j.id_futbolista]);
     }
 
     await db.query('COMMIT');
