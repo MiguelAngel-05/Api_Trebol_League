@@ -207,59 +207,31 @@ router.post('/:id_liga/join', verifyToken, async (req, res) => {
   }
 });
 
-// Eliminar una liga (solo el owner)
+// Eliminar una liga 
 router.delete('/:id_liga', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
   const { id_liga } = req.params;
   try {
+    await db.query('BEGIN');
+    
+    await db.query('DELETE FROM historial_transferencias WHERE id_liga=$1', [id_liga]);
+    await db.query('DELETE FROM mercado_liga WHERE id_liga=$1', [id_liga]);
+    await db.query('DELETE FROM pujas WHERE id_liga=$1', [id_liga]);
+    await db.query('DELETE FROM mensajes_privados WHERE id_liga=$1', [id_liga]);
+    await db.query('DELETE FROM ofertas_privadas WHERE id_liga=$1', [id_liga]);
+    await db.query('DELETE FROM chat_general WHERE id_liga=$1', [id_liga]);
+    await db.query('DELETE FROM rendimiento_partido WHERE id_partido IN (SELECT id_partido FROM partidos WHERE id_liga=$1)', [id_liga]);
+    await db.query('DELETE FROM eventos_partido WHERE id_partido IN (SELECT id_partido FROM partidos WHERE id_liga=$1)', [id_liga]);
+    await db.query('DELETE FROM partidos WHERE id_liga=$1', [id_liga]);
+    await db.query('DELETE FROM futbolista_user_liga WHERE id_liga=$1', [id_liga]);
     await db.query('DELETE FROM users_liga WHERE id_liga=$1', [id_liga]);
     await db.query('DELETE FROM ligas WHERE id_liga=$1', [id_liga]);
-    res.json({ message: 'Liga eliminada' });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ message: 'Error eliminando liga' });
-  }
-});
-
-// Terminar/Reiniciar Liga con opciones
-router.post('/:id_liga/reset', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
-  const { id_liga } = req.params;
-  const { borrarPuntos, borrarJugadores, borrarJornadas, borrarDinero, borrarMensajes } = req.body;
-
-  try {
-    await db.query('BEGIN');
-
-    if (borrarJornadas) {
-      await db.query('DELETE FROM rendimiento_partido WHERE id_partido IN (SELECT id_partido FROM partidos WHERE id_liga = $1)', [id_liga]);
-      await db.query('DELETE FROM eventos_partido WHERE id_partido IN (SELECT id_partido FROM partidos WHERE id_liga = $1)', [id_liga]);
-      await db.query('DELETE FROM partidos WHERE id_liga = $1', [id_liga]);
-    }
-
-    if (borrarPuntos) {
-      await db.query('UPDATE users_liga SET puntos = 0 WHERE id_liga = $1', [id_liga]);
-    }
-
-    if (borrarDinero) {
-      await db.query('UPDATE users_liga SET dinero = 0 WHERE id_liga = $1', [id_liga]);
-    }
-
-    if (borrarJugadores) {
-      await db.query('DELETE FROM futbolista_user_liga WHERE id_liga = $1', [id_liga]);
-      await db.query('DELETE FROM pujas WHERE id_liga = $1', [id_liga]);
-      await db.query('DELETE FROM mercado_liga WHERE id_liga = $1', [id_liga]);
-      await db.query('DELETE FROM historial_transferencias WHERE id_liga = $1', [id_liga]);
-    }
-
-    if (borrarMensajes) {
-      await db.query('DELETE FROM chat_general WHERE id_liga = $1', [id_liga]);
-      await db.query('DELETE FROM ofertas_privadas WHERE id_liga = $1', [id_liga]);
-      await db.query('DELETE FROM mensajes_privados WHERE id_liga = $1', [id_liga]);
-    }
-
+    
     await db.query('COMMIT');
-    res.json({ message: 'Acciones de reset aplicadas con éxito.' });
+    res.json({ message: 'Liga eliminada por completo' });
   } catch (err) {
     await db.query('ROLLBACK');
-    res.status(500).json({ error: 'Error al reiniciar la liga' });
+    console.error(err);
+    res.status(500).json({ message: 'Error eliminando liga' });
   }
 });
 
@@ -741,6 +713,7 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
 
     // Mercado inicial
     await db.query('DELETE FROM mercado_liga WHERE id_liga = $1', [id_liga]);
+    await db.query('DELETE FROM historial_transferencias WHERE id_liga = $1', [id_liga]);
 
     const mercadoInicial = await db.query(`
       WITH Disponibles AS (
@@ -853,6 +826,49 @@ router.get('/:id_liga/ranking-jornada/:jornada', verifyToken, async (req, res) =
     res.json(result.rows);
   } catch(err) {
     res.status(500).json({message: 'Error cargando ranking de jornada'});
+  }
+});
+
+// Terminar/Reiniciar Liga con opciones
+router.post('/:id_liga/reset', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
+  const { id_liga } = req.params;
+  const { borrarPuntos, borrarJugadores, borrarJornadas, borrarDinero, borrarMensajes } = req.body;
+
+  try {
+    await db.query('BEGIN');
+
+    if (borrarJornadas) {
+      await db.query('DELETE FROM rendimiento_partido WHERE id_partido IN (SELECT id_partido FROM partidos WHERE id_liga = $1)', [id_liga]);
+      await db.query('DELETE FROM eventos_partido WHERE id_partido IN (SELECT id_partido FROM partidos WHERE id_liga = $1)', [id_liga]);
+      await db.query('DELETE FROM partidos WHERE id_liga = $1', [id_liga]);
+    }
+
+    if (borrarPuntos) {
+      await db.query('UPDATE users_liga SET puntos = 0 WHERE id_liga = $1', [id_liga]);
+    }
+
+    if (borrarDinero) {
+      await db.query('UPDATE users_liga SET dinero = 0 WHERE id_liga = $1', [id_liga]);
+    }
+
+    if (borrarJugadores) {
+      await db.query('DELETE FROM futbolista_user_liga WHERE id_liga = $1', [id_liga]);
+      await db.query('DELETE FROM pujas WHERE id_liga = $1', [id_liga]);
+      await db.query('DELETE FROM mercado_liga WHERE id_liga = $1', [id_liga]);
+      await db.query('DELETE FROM historial_transferencias WHERE id_liga = $1', [id_liga]);
+    }
+
+    if (borrarMensajes) {
+      await db.query('DELETE FROM chat_general WHERE id_liga = $1', [id_liga]);
+      await db.query('DELETE FROM ofertas_privadas WHERE id_liga = $1', [id_liga]);
+      await db.query('DELETE FROM mensajes_privados WHERE id_liga = $1', [id_liga]);
+    }
+
+    await db.query('COMMIT');
+    res.json({ message: 'Acciones de reset aplicadas con éxito.' });
+  } catch (err) {
+    await db.query('ROLLBACK');
+    res.status(500).json({ error: 'Error al reiniciar la liga' });
   }
 });
 
