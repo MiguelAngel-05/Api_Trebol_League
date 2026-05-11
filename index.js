@@ -471,73 +471,82 @@ router.get('/:id_liga/datos-usuario', verifyToken, async (req, res) => {
   }
 });
 
-// Obtener el Roster, Lore y ESTADÍSTICAS REALES de un equipo de la IA
+// Obtener el Roster, Lore, Noticias y ÚLTIMO PARTIDO de un equipo
 router.get('/:id_liga/club/:nombre_club', verifyToken, async (req, res) => {
   const { id_liga, nombre_club } = req.params;
   try {
+    // 1. Plantilla Normal
     const jugRes = await db.query(`
       SELECT f.id_futbolista, f.nombre, f.posicion, f.media, f.tipo_carta, f.imagen,
-             COALESCE(goles.total, 0) as goles,
-             COALESCE(asistencias.total, 0) as asistencias,
-             COALESCE(amarillas.total, 0) as amarillas,
-             COALESCE(rojas.total, 0) as rojas
+             f.partidos_lesion, f.partidos_sancion, f.estado_lesion, f.forma_actual,
+             COALESCE(goles.total, 0) as goles, COALESCE(asistencias.total, 0) as asistencias,
+             COALESCE(amarillas.total, 0) as amarillas, COALESCE(rojas.total, 0) as rojas
       FROM futbolistas f
-      LEFT JOIN (
-          SELECT id_futbolista, COUNT(*) as total 
-          FROM eventos_partido ep JOIN partidos p ON p.id_partido = ep.id_partido 
-          WHERE p.id_liga = $1 AND tipo_evento = 'gol' 
-          GROUP BY id_futbolista
-      ) goles ON f.id_futbolista = goles.id_futbolista
-      LEFT JOIN (
-          SELECT id_asistente as id_futbolista, COUNT(*) as total 
-          FROM eventos_partido ep JOIN partidos p ON p.id_partido = ep.id_partido 
-          WHERE p.id_liga = $1 AND tipo_evento = 'gol' AND id_asistente IS NOT NULL 
-          GROUP BY id_asistente
-      ) asistencias ON f.id_futbolista = asistencias.id_futbolista
-      LEFT JOIN (
-          SELECT id_futbolista, COUNT(*) as total 
-          FROM eventos_partido ep JOIN partidos p ON p.id_partido = ep.id_partido 
-          WHERE p.id_liga = $1 AND tipo_evento = 'amarilla' 
-          GROUP BY id_futbolista
-      ) amarillas ON f.id_futbolista = amarillas.id_futbolista
-      LEFT JOIN (
-          SELECT id_futbolista, COUNT(*) as total 
-          FROM eventos_partido ep JOIN partidos p ON p.id_partido = ep.id_partido 
-          WHERE p.id_liga = $1 AND tipo_evento = 'roja' 
-          GROUP BY id_futbolista
-      ) rojas ON f.id_futbolista = rojas.id_futbolista
+      LEFT JOIN (SELECT id_futbolista, COUNT(*) as total FROM eventos_partido ep JOIN partidos p ON p.id_partido = ep.id_partido WHERE p.id_liga = $1 AND tipo_evento = 'gol' GROUP BY id_futbolista) goles ON f.id_futbolista = goles.id_futbolista
+      LEFT JOIN (SELECT id_asistente as id_futbolista, COUNT(*) as total FROM eventos_partido ep JOIN partidos p ON p.id_partido = ep.id_partido WHERE p.id_liga = $1 AND tipo_evento = 'gol' AND id_asistente IS NOT NULL GROUP BY id_asistente) asistencias ON f.id_futbolista = asistencias.id_futbolista
+      LEFT JOIN (SELECT id_futbolista, COUNT(*) as total FROM eventos_partido ep JOIN partidos p ON p.id_partido = ep.id_partido WHERE p.id_liga = $1 AND tipo_evento = 'amarilla' GROUP BY id_futbolista) amarillas ON f.id_futbolista = amarillas.id_futbolista
+      LEFT JOIN (SELECT id_futbolista, COUNT(*) as total FROM eventos_partido ep JOIN partidos p ON p.id_partido = ep.id_partido WHERE p.id_liga = $1 AND tipo_evento = 'roja' GROUP BY id_futbolista) rojas ON f.id_futbolista = rojas.id_futbolista
       WHERE f.equipo = $2 AND f.tipo_carta = 'normal'
       ORDER BY f.media DESC
     `, [id_liga, nombre_club]);
 
+    // 2. Último Partido
+    const ultimoPartidoRes = await db.query(`
+      SELECT * FROM partidos WHERE id_liga = $1 AND (equipo_local = $2 OR equipo_visitante = $2) AND estado = 'finalizado'
+      ORDER BY fecha_partido DESC LIMIT 1
+    `, [id_liga, nombre_club]);
+
+    let ultimoPartido = null;
+    if (ultimoPartidoRes.rows.length > 0) {
+      ultimoPartido = ultimoPartidoRes.rows[0];
+      if (typeof ultimoPartido.alineaciones === 'string') {
+        try { ultimoPartido.alineaciones = JSON.parse(ultimoPartido.alineaciones); } catch (e) { ultimoPartido.alineaciones = null; }
+      }
+      const eventosRes = await db.query('SELECT * FROM eventos_partido WHERE id_partido = $1', [ultimoPartido.id_partido]);
+      ultimoPartido.eventos = eventosRes.rows;
+    }
+
+    // 3. Noticias (Últimas lesiones y sanciones de ESTE equipo en la liga)
+    const noticiasRes = await db.query(`
+      SELECT e.minuto, e.tipo_evento, e.descripcion, p.jornada 
+      FROM eventos_partido e 
+      JOIN partidos p ON e.id_partido = p.id_partido 
+      JOIN futbolistas f ON e.id_futbolista = f.id_futbolista 
+      WHERE p.id_liga = $1 AND f.equipo = $2 AND e.tipo_evento IN ('lesion', 'roja', 'amarilla')
+      ORDER BY p.fecha_partido DESC, e.minuto DESC 
+      LIMIT 15
+    `, [id_liga, nombre_club]);
+
     const lores = {
-      'Real Trébol FC': 'Los Dioses fundadores de la liga. Invencibles en su estadio y con un presupuesto infinito.',
-      'Motor Club Chacón': 'Velocidad, gasolina y rock n roll. Su ataque es temible y su afición ruidosa.',
-      'Athletic Hullera': 'Mineros duros de roer. Su defensa es un muro de piedra forjado en las profundidades.',
-      'Deportivo Relámpago': 'El equipo del pueblo, conocido por sus contraataques fugaces y su garra.',
-      'Real Pinar FC': 'Los reyes del bosque. Fútbol elegante, de toque y máximo respeto al balón.',
-      'Neón City FC': 'Fútbol futurista bajo las luces de la gran ciudad. Juego rápido y tecnológico.',
-      'Pixel United': 'Precisión milimétrica en cada pase. Construyen el juego bloque a bloque.',
-      'CF Átomo': 'Pequeños pero explosivos. Un equipo con una energía inagotable los 90 minutos.',
+      'Real Trébol FC': 'Los Dioses fundadores de la liga. Invencibles en su estadio.',
+      'Motor Club Chacón': 'Velocidad, gasolina y rock n roll. Su ataque es temible.',
+      'Athletic Hullera': 'Mineros duros de roer. Su defensa es un muro de piedra.',
+      'Deportivo Relámpago': 'El equipo del pueblo, conocido por sus contraataques fugaces.',
+      'Real Pinar FC': 'Los reyes del bosque. Fútbol elegante y de toque.',
+      'Neón City FC': 'Fútbol futurista bajo las luces de la ciudad.',
+      'Pixel United': 'Construyen el juego pase a pase, bloque a bloque.',
+      'CF Átomo': 'Pequeños pero explosivos. Energía inagotable.',
       'Club Náutico Brisamar': 'Juegan al ritmo de las olas. Un fútbol fluido y refrescante.',
-      'Racing Vaguadas': 'Especialistas en barrizales y partidos trabados. Nunca dan un balón por perdido.',
-      'UD Recreo': 'La alegría de la liga. Siempre ofensivos, siempre buscando el espectáculo.',
-      'Alianza Metropolitana': 'El orden táctico hecho equipo. Una máquina perfectamente engrasada.',
-      'Gourmet FC': 'Fútbol exquisito para paladares finos. Solo aceptan la victoria con estilo.',
-      'Cosmos United': 'Un equipo de otra galaxia. Estrellas brillantes con un fútbol espacial.',
-      'Dragones de Oriente': 'Místicos y letales. Cuando despiertan, su fuego arrasa con cualquier defensa.',
-      'CD Refugio': 'Su estadio es un fortín inexpugnable. Nadie sale vivo de su valle.',
-      'Unión Fortaleza': 'Disciplina militar. Una defensa de hierro que nadie ha logrado romper este año.',
-      'CD Frontera': 'Guerreros del límite. Expertos en ganar partidos en el último suspiro.',
-      'Sporting Lechuza': 'Cazan de noche. Sus mejores resultados siempre llegan bajo los focos.',
-      'Titanes CF': 'Gigantes del área. Dominan el juego aéreo como nadie en Isla Trébol.',
-      'Pangea FC': 'Fuerza de la naturaleza. Un equipo que une a todos los continentes del fútbol.'
+      'Racing Vaguadas': 'Especialistas en barrizales. Nunca dan un balón por perdido.',
+      'UD Recreo': 'Siempre ofensivos, siempre buscando el espectáculo.',
+      'Alianza Metropolitana': 'El orden táctico hecho equipo.',
+      'Gourmet FC': 'Fútbol exquisito para paladares finos.',
+      'Cosmos United': 'Estrellas brillantes con un fútbol espacial.',
+      'Dragones de Oriente': 'Su fuego arrasa con cualquier defensa.',
+      'CD Refugio': 'Su estadio es un fortín inexpugnable.',
+      'Unión Fortaleza': 'Disciplina militar. Una defensa de hierro.',
+      'CD Frontera': 'Expertos en ganar partidos en el último suspiro.',
+      'Sporting Lechuza': 'Sus mejores resultados llegan bajo los focos nocturnos.',
+      'Titanes CF': 'Gigantes del área. Dominan el juego aéreo.',
+      'Pangea FC': 'Un equipo que une todos los estilos de fútbol.'
     };
 
     res.json({
       equipo: nombre_club,
-      lore: lores[nombre_club] || 'Un club histórico de Isla Trébol con una afición muy fiel y pasional.',
-      plantilla: jugRes.rows
+      lore: lores[nombre_club] || 'Un club histórico de Isla Trébol.',
+      plantilla: jugRes.rows,
+      ultimo_partido: ultimoPartido,
+      noticias: noticiasRes.rows
     });
   } catch(err) {
     res.status(500).json({message: 'Error cargando el club'});
