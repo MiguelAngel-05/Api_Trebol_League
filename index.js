@@ -1334,6 +1334,73 @@ router.get('/:id_liga/ranking-jornada/:jornada', verifyToken, async (req, res) =
   }
 });
 
+// Obtener el estado de una jornada
+router.get('/:id_liga/estado-jornada/:jornada', verifyToken, async (req, res) => {
+  const { id_liga, jornada } = req.params;
+
+  try {
+    const result = await db.query(`
+      SELECT
+        COUNT(*) AS total_partidos,
+
+        COUNT(*) FILTER (
+          WHERE fecha_partido <= NOW()
+        ) AS partidos_iniciados,
+
+        COUNT(*) FILTER (
+          WHERE estado = 'finalizado'
+        ) AS partidos_simulados,
+
+        COUNT(*) FILTER (
+          WHERE estado = 'finalizado'
+            AND fecha_partido + interval '70 minutes' <= NOW()
+        ) AS partidos_visibles,
+
+        BOOL_AND(
+          estado = 'finalizado'
+          AND fecha_partido + interval '70 minutes' <= NOW()
+        ) AS jornada_finalizada_visible,
+
+        BOOL_AND(premios_pagados = true) AS premios_pagados,
+
+        MIN(fecha_partido) AS empieza_en,
+        MAX(fecha_partido + interval '70 minutes') AS termina_visible_en
+
+      FROM partidos
+      WHERE id_liga = $1
+        AND jornada = $2
+    `, [id_liga, jornada]);
+
+    const estado = result.rows[0];
+
+    let estado_jornada = 'no_iniciada';
+
+    if (Number(estado.partidos_iniciados) > 0 && !estado.jornada_finalizada_visible) {
+      estado_jornada = 'en_curso';
+    }
+
+    if (estado.jornada_finalizada_visible) {
+      estado_jornada = 'finalizada';
+    }
+
+    res.json({
+      jornada: Number(jornada),
+      estado_jornada,
+      total_partidos: Number(estado.total_partidos || 0),
+      partidos_iniciados: Number(estado.partidos_iniciados || 0),
+      partidos_simulados: Number(estado.partidos_simulados || 0),
+      partidos_visibles: Number(estado.partidos_visibles || 0),
+      premios_pagados: estado.premios_pagados === true,
+      empieza_en: estado.empieza_en,
+      termina_visible_en: estado.termina_visible_en
+    });
+
+  } catch (err) {
+    console.error('Error obteniendo estado de jornada:', err);
+    res.status(500).json({ message: 'Error obteniendo estado de jornada' });
+  }
+});
+
 // Terminar/Reiniciar Liga con opciones
 router.post('/:id_liga/reset', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
   const { id_liga } = req.params;
@@ -3397,25 +3464,35 @@ app.get('/api/cron/premios-jornada', async (req, res) => {
         const manager = ranking.rows[i];
         const puntos = Number(manager.puntos_jornada);
         
-        // Base: 100.000 Tc por cada punto conseguido
-        let premio = puntos * 100000;
-        
-        // Bonus por podio de jornada
-        // 1º Puesto: +5 Millones
-        if (i === 0) premio += 5000000;
-        // 2º Puesto: +3 Millones
-        else if (i === 1) premio += 3000000;
-        // 3º Puesto: +1.5 Millones
-        else if (i === 2) premio += 1500000;
+        const bonusPorPuesto = [
+          5000000,
+          3500000,
+          2500000,
+          1500000,
+          1000000,
+          750000,
+          500000,
+          300000,
+          150000,
+          0
+        ];
+
+        let premio = 0;
+
+        if (puntos > 0 && puntos >= 0) {
+          premio += puntos * 100000;
+        }
+
+        premio += bonusPorPuesto[i] || 0;
 
         if (premio > 0) {
           // Ingresar dinero
           await db.query('UPDATE users_liga SET dinero = dinero + $1 WHERE id_user = $2 AND id_liga = $3', [premio, manager.id_user, id_liga]);
           
           // Construir el mensaje del podio para el chat
-          if (i < 3) {
-             const medalla = i === 0 ? '🥇' : (i === 1 ? '🥈' : '🥉');
-             mensajeChat += `${medalla} ${manager.username}: ${puntos} pts (+${new Intl.NumberFormat('es-ES').format(premio)} Tc)\n`;
+          if (premio > 0 && puntos >= 0) {
+            const posicion = `${i + 1}º`;
+            mensajeChat += `${posicion} ${manager.username}: ${puntos} pts (+${new Intl.NumberFormat('es-ES').format(premio)} Tc)\n`;
           }
         }
       }
