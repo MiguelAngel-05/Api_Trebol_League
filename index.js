@@ -112,6 +112,70 @@ app.post('/api/login', async (req, res) => {
 // Ruta protegida de prueba
 app.get('/api/protected', verifyToken, (req, res) => res.json({ message: 'Protected route', user: req.user }));
 
+// -- Funciones Importantes --
+// Asignación de plantillas iniciales
+async function asignarPlantillaInicialUsuario(idUser, idLiga) {
+  const shuffleArray = (array) => {
+    const copia = [...array];
+
+    for (let i = copia.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [copia[i], copia[j]] = [copia[j], copia[i]];
+    }
+
+    return copia;
+  };
+
+  let posiciones = ['PT', 'DF', 'DF', 'DF', 'DF', 'MC', 'MC', 'MC', 'DL', 'DL', 'DL'];
+  posiciones = shuffleArray(posiciones);
+
+  const buckets = [
+    { mMin: 60, mMax: 65, cant: 8 },
+    { mMin: 66, mMax: 70, cant: 2 },
+    { mMin: 75, mMax: 80, cant: 1 }
+  ];
+
+  let jugadoresAsignados = 0;
+
+  for (const bucket of buckets) {
+    for (let i = 0; i < bucket.cant; i++) {
+      const posActual = posiciones.shift();
+
+      const player = await db.query(`
+        SELECT id_futbolista 
+        FROM futbolistas 
+        WHERE media BETWEEN $1 AND $2 
+          AND TRIM(UPPER(posicion)) = $3 
+          AND tipo_carta = 'normal'
+          AND equipo != 'Real Trébol FC'
+          AND id_futbolista NOT IN (
+            SELECT id_futbolista 
+            FROM futbolista_user_liga 
+            WHERE id_liga = $4
+          )
+          AND id_futbolista NOT IN (
+            SELECT id_futbolista
+            FROM mercado_liga
+            WHERE id_liga = $4
+          )
+        ORDER BY RANDOM() 
+        LIMIT 1
+      `, [bucket.mMin, bucket.mMax, posActual, idLiga]);
+
+      if (player.rows.length > 0) {
+        await db.query(`
+          INSERT INTO futbolista_user_liga 
+          (id_user, id_liga, id_futbolista, es_titular, hueco_plantilla, en_venta, precio_venta)
+          VALUES ($1, $2, $3, false, NULL, false, 0)
+        `, [idUser, idLiga, player.rows[0].id_futbolista]);
+
+        jugadoresAsignados++;
+      }
+    }
+  }
+
+  return jugadoresAsignados;
+}
 
 
 // --- RUTAS DE LIGAS ---
@@ -177,33 +241,94 @@ router.post('/get-id-by-credentials', verifyToken, async (req, res) => {
   }
 });
 
-// Unirse a una liga 
+// Unirse a una liga
 router.post('/:id_liga/join', verifyToken, async (req, res) => {
   const idUser = req.user.id;
   const { id_liga } = req.params;
   const { clave } = req.body;
 
   try {
-    const ligaResult = await db.query('SELECT * FROM ligas WHERE id_liga=$1', [id_liga]);
-    if (!ligaResult.rows[0]) return res.status(404).json({ message: 'Liga no encontrada' });
+    await db.query('BEGIN');
+
+    const ligaResult = await db.query(`
+      SELECT *
+      FROM ligas
+      WHERE id_liga = $1
+      FOR UPDATE
+    `, [id_liga]);
+
+    if (!ligaResult.rows[0]) {
+      throw new Error('Liga no encontrada');
+    }
 
     const liga = ligaResult.rows[0];
-    if (liga.clave !== clave) return res.status(403).json({ message: 'Clave incorrecta' });
-    if (liga.numero_jugadores >= liga.max_jugadores) return res.status(403).json({ message: 'Liga llena' });
 
-    // Insertar al usuario como user en la liga
-    await db.query('INSERT INTO users_liga (id_user,id_liga,rol,dinero,puntos) VALUES ($1,$2,$3,$4,$5)',
-      [idUser, id_liga, 'user', 100000000, 0]
-    );
+    if (liga.clave !== clave) {
+      await db.query('ROLLBACK');
+      return res.status(403).json({ message: 'Clave incorrecta' });
+    }
 
-    // Aumentar el número de jugadores
-    await db.query('UPDATE ligas SET numero_jugadores = numero_jugadores + 1 WHERE id_liga=$1', [id_liga]);
+    if (Number(liga.numero_jugadores) >= Number(liga.max_jugadores)) {
+      await db.query('ROLLBACK');
+      return res.status(403).json({ message: 'Liga llena' });
+    }
 
-    res.json({ message: 'Te has unido a la liga', id_liga });
+    const yaExiste = await db.query(`
+      SELECT 1
+      FROM users_liga
+      WHERE id_user = $1
+        AND id_liga = $2
+    `, [idUser, id_liga]);
+
+    if (yaExiste.rows.length > 0) {
+      await db.query('ROLLBACK');
+      return res.status(400).json({ message: 'Ya estás en esta liga' });
+    }
+
+    const temporadaActiva = liga.temporada_estado === 'activa' || liga.temporada_estado === 'finalizada';
+    const dineroEntrada = temporadaActiva
+      ? Number(liga.dinero_inicial || 100000000)
+      : 100000000;
+
+    await db.query(`
+      INSERT INTO users_liga 
+      (id_user, id_liga, rol, dinero, puntos)
+      VALUES ($1, $2, 'user', $3, 0)
+    `, [idUser, id_liga, dineroEntrada]);
+
+    await db.query(`
+      UPDATE ligas 
+      SET numero_jugadores = numero_jugadores + 1 
+      WHERE id_liga = $1
+    `, [id_liga]);
+
+    let jugadoresAsignados = 0;
+
+    if (temporadaActiva && liga.dar_plantilla_inicial === true) {
+      jugadoresAsignados = await asignarPlantillaInicialUsuario(idUser, id_liga);
+    }
+
+    await db.query('COMMIT');
+
+    res.json({
+      message: temporadaActiva
+        ? `Te has unido a la liga. Has recibido ${dineroEntrada} Tc${liga.dar_plantilla_inicial ? ` y ${jugadoresAsignados} jugadores.` : '.'}`
+        : 'Te has unido a la liga',
+      id_liga,
+      dinero: dineroEntrada,
+      jugadores_asignados: jugadoresAsignados
+    });
+
   } catch (err) {
-    console.error(err);
-    if (err.code === '23505') return res.status(400).json({ message: 'Ya estás en esta liga' });
-    res.status(500).json({ message: 'Error al unirse a la liga' });
+    await db.query('ROLLBACK');
+
+    console.error('Error al unirse a la liga:', err);
+
+    if (err.code === '23505') {
+      return res.status(400).json({ message: 'Ya estás en esta liga' });
+    }
+
+    res.status(500).json({ message: err.message || 'Error al unirse a la liga' });
   }
 });
 
@@ -608,6 +733,23 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       await db.query('UPDATE users_liga SET dinero = $1 WHERE id_liga = $2', [dineroInicial, id_liga]);
     }
 
+    //Guardar la configuración de la liga
+    await db.query(`
+      UPDATE ligas
+      SET 
+        temporada_estado = 'activa',
+        dinero_inicial = $1,
+        dar_plantilla_inicial = $2,
+        fecha_inicio_temporada = COALESCE(fecha_inicio_temporada, NOW()),
+        fecha_fin_temporada = NULL,
+        reset_automatico_en = NULL
+      WHERE id_liga = $3
+    `, [
+      dineroInicial !== undefined ? dineroInicial : 100000000,
+      !!darPlantilla,
+      id_liga
+    ]);
+
     // Reparto de plantillas
     if (darPlantilla) {
       await db.query('DELETE FROM futbolista_user_liga WHERE id_liga = $1', [id_liga]);
@@ -623,37 +765,7 @@ router.post('/:id_liga/generar-calendario', verifyToken, requireLeagueRole(['own
       };
 
       for (const u of usersRes.rows) {
-        let posiciones = ['PT', 'DF', 'DF', 'DF', 'DF', 'MC', 'MC', 'MC', 'DL', 'DL', 'DL'];
-        posiciones = shuffleArray(posiciones); 
-
-        const buckets = [
-          { mMin: 60, mMax: 65, cant: 8 }, 
-          { mMin: 66, mMax: 70, cant: 2 }, 
-          { mMin: 75, mMax: 80, cant: 1 }  
-        ];
-
-        for (const bucket of buckets) {
-          for (let i = 0; i < bucket.cant; i++) {
-            const posActual = posiciones.shift(); 
-            
-            const player = await db.query(`
-              SELECT id_futbolista FROM futbolistas 
-              WHERE media BETWEEN $1 AND $2 
-                AND TRIM(UPPER(posicion)) = $3 
-                AND tipo_carta = 'normal' 
-                AND equipo != 'Real Trébol FC'
-                AND id_futbolista NOT IN (SELECT id_futbolista FROM futbolista_user_liga WHERE id_liga = $4)
-              ORDER BY RANDOM() LIMIT 1
-            `, [bucket.mMin, bucket.mMax, posActual, id_liga]);
-
-            if (player.rows.length > 0) {
-              await db.query(`
-                INSERT INTO futbolista_user_liga (id_user, id_liga, id_futbolista, es_titular, hueco_plantilla, en_venta, precio_venta) 
-                VALUES ($1, $2, $3, false, NULL, false, 0)
-              `, [u.id_user, id_liga, player.rows[0].id_futbolista]);
-            }
-          }
-        }
+        await asignarPlantillaInicialUsuario(u.id_user, id_liga);
       }
     }
 
