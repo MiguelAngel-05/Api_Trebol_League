@@ -2571,6 +2571,26 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
     await db.query(`UPDATE futbolistas SET partidos_sancion = GREATEST(0, partidos_sancion - 1), partidos_lesion = GREATEST(0, partidos_lesion - 1)`);
 
     for (const partido of partidosRes.rows) {
+
+      try {
+        const resultadoBloqueo = await bloquearAlineacionesJornada(
+          Number(partido.id_liga),
+          Number(partido.jornada)
+        );
+
+        if (resultadoBloqueo.bloqueada) {
+          console.log(
+            `Jornada ${partido.jornada} de liga ${partido.id_liga} bloqueada automáticamente`,
+            resultadoBloqueo
+          );
+        }
+      } catch (err) {
+        console.error(
+          `Error bloqueando alineaciones de jornada ${partido.jornada} liga ${partido.id_liga}:`,
+          err
+        );
+      }
+      
       await db.query('BEGIN');
       
       // La IA solo convoca a las cartas 'normales'. Así no hay clones en el campo.
@@ -3002,30 +3022,7 @@ app.get('/api/cron/premios-jornada', async (req, res) => {
   }
 });
 
-// P R U E B A
-router.post('/:id_liga/bloquear-jornada/:jornada', verifyToken, requireLeagueRole(['owner', 'admin']), async (req, res) => {
-  const { id_liga, jornada } = req.params;
 
-  try {
-    const resultado = await bloquearAlineacionesJornada(Number(id_liga), Number(jornada));
-
-    res.json({
-      message: resultado.bloqueada
-        ? `Jornada ${jornada} bloqueada correctamente`
-        : `Jornada ${jornada} no se ha bloqueado`,
-      resultado
-    });
-  } catch (err) {
-    console.error('Error bloqueando jornada:', err);
-
-    res.status(500).json({
-      message: 'Error bloqueando la jornada',
-      error: err.message,
-      code: err.code,
-      detail: err.detail
-    });
-  }
-});
 
 app.use('/api/ligas', router);
 app.use('/api/mercado', mercadoRouter);
