@@ -340,6 +340,37 @@ async function bloquearAlineacionesJornada(idLiga, jornada) {
     huecos_vacios: totalHuecosVacios
   };
 }
+async function debeBloquearJornada(idLiga, jornada) {
+  const yaBloqueada = await db.query(`
+    SELECT 1
+    FROM alineaciones_jornada
+    WHERE id_liga = $1
+      AND jornada = $2
+    LIMIT 1
+  `, [idLiga, jornada]);
+
+  if (yaBloqueada.rows.length > 0) {
+    return false;
+  }
+
+  const primerPartidoRes = await db.query(`
+    SELECT fecha_partido
+    FROM partidos
+    WHERE id_liga = $1
+      AND jornada = $2
+    ORDER BY fecha_partido ASC
+    LIMIT 1
+  `, [idLiga, jornada]);
+
+  if (primerPartidoRes.rows.length === 0) {
+    return false;
+  }
+
+  const primerPartido = new Date(primerPartidoRes.rows[0].fecha_partido).getTime();
+  const ahora = Date.now();
+
+  return ahora >= primerPartido;
+}
 
 
 // --- RUTAS DE LIGAS ---
@@ -2573,12 +2604,17 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
     for (const partido of partidosRes.rows) {
 
       try {
-        const resultadoBloqueo = await bloquearAlineacionesJornada(
+        const bloquear = await debeBloquearJornada(
           Number(partido.id_liga),
           Number(partido.jornada)
         );
 
-        if (resultadoBloqueo.bloqueada) {
+        if (bloquear) {
+          const resultadoBloqueo = await bloquearAlineacionesJornada(
+            Number(partido.id_liga),
+            Number(partido.jornada)
+          );
+
           console.log(
             `Jornada ${partido.jornada} de liga ${partido.id_liga} bloqueada automáticamente`,
             resultadoBloqueo
@@ -2589,6 +2625,9 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
           `Error bloqueando alineaciones de jornada ${partido.jornada} liga ${partido.id_liga}:`,
           err
         );
+
+        // De momento NO paramos la simulación por esto.
+        // Más adelante podemos hacerlo obligatorio.
       }
       
       await db.query('BEGIN');
