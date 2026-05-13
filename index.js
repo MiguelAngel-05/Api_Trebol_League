@@ -627,19 +627,53 @@ router.delete('/:id_liga', verifyToken, requireLeagueRole(['owner']), async (req
 // Ver ligas de un usuario
 app.get('/api/mis-ligas', verifyToken, async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT l.id_liga, l.nombre, l.numero_jugadores, l.max_jugadores, ul.dinero, ul.puntos, ul.rol
-       FROM users_liga ul
-       JOIN ligas l ON l.id_liga=ul.id_liga
-       WHERE ul.id_user=$1`, [req.user.id]
-    );
+    const result = await db.query(`
+      SELECT 
+        l.id_liga,
+        l.nombre,
+        l.numero_jugadores,
+        l.max_jugadores,
+        ul.dinero,
+        ul.rol,
+
+        COALESCE(SUM(
+          CASE 
+            WHEN p.id_partido IS NOT NULL THEN rp.puntos_totales 
+            ELSE 0 
+          END
+        ), 0) AS puntos
+
+      FROM users_liga ul
+      JOIN ligas l ON l.id_liga = ul.id_liga
+
+      LEFT JOIN rendimiento_partido rp 
+        ON rp.id_user = ul.id_user
+
+      LEFT JOIN partidos p 
+        ON p.id_partido = rp.id_partido
+        AND p.id_liga = ul.id_liga
+        AND p.estado = 'finalizado'
+        AND p.fecha_partido + interval '70 minutes' <= NOW()
+
+      WHERE ul.id_user = $1
+
+      GROUP BY 
+        l.id_liga,
+        l.nombre,
+        l.numero_jugadores,
+        l.max_jugadores,
+        ul.dinero,
+        ul.rol
+
+      ORDER BY l.id_liga DESC
+    `, [req.user.id]);
+
     res.json(result.rows);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error obteniendo ligas' });
   }
 });
-
 
 // --- RUTAS DE Mi plantilla y Plantilla Rival ---
 // Obtener mis jugadores de la liga
@@ -2205,20 +2239,58 @@ router.post('/:id_liga/ofertas/rechazar', verifyToken, async (req, res) => {
 // Obtener la CLASIFICACIÓN GENERAL de la Liga
 router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
+
   try {
     const result = await db.query(`
       SELECT 
-        u.id, u.username, u.avatar, ul.puntos, ul.rol, ul.dinero as presupuesto,
-        (SELECT COUNT(*) FROM futbolista_user_liga ful WHERE ful.id_user = u.id AND ful.id_liga = $1) as total_jugadores
+        u.id,
+        u.username,
+        u.avatar,
+        ul.rol,
+        ul.dinero AS presupuesto,
+
+        COALESCE(SUM(
+          CASE 
+            WHEN p.id_partido IS NOT NULL THEN rp.puntos_totales 
+            ELSE 0 
+          END
+        ), 0) AS puntos,
+
+        (
+          SELECT COUNT(*) 
+          FROM futbolista_user_liga ful 
+          WHERE ful.id_user = u.id 
+            AND ful.id_liga = $1
+        ) AS total_jugadores
+
       FROM users_liga ul
       JOIN users u ON ul.id_user = u.id
+
+      LEFT JOIN rendimiento_partido rp 
+        ON rp.id_user = ul.id_user
+
+      LEFT JOIN partidos p 
+        ON p.id_partido = rp.id_partido
+        AND p.id_liga = ul.id_liga
+        AND p.estado = 'finalizado'
+        AND p.fecha_partido + interval '70 minutes' <= NOW()
+
       WHERE ul.id_liga = $1
-      ORDER BY ul.puntos DESC, u.username ASC
+
+      GROUP BY 
+        u.id,
+        u.username,
+        u.avatar,
+        ul.rol,
+        ul.dinero
+
+      ORDER BY puntos DESC, u.username ASC
     `, [id_liga]);
+
     res.json(result.rows);
   } catch(err) {
     console.error(err);
-    res.status(500).json({message: 'Error cargando clasificación general'});
+    res.status(500).json({ message: 'Error cargando clasificación general' });
   }
 });
 
@@ -3276,7 +3348,12 @@ app.get('/api/cron/premios-jornada', async (req, res) => {
       SELECT id_liga, jornada
       FROM partidos
       GROUP BY id_liga, jornada
-      HAVING bool_and(estado = 'finalizado') AND bool_and(premios_pagados = false)
+      HAVING 
+        bool_and(
+          estado = 'finalizado'
+          AND fecha_partido + interval '70 minutes' <= NOW()
+        )
+        AND bool_and(premios_pagados = false)
     `);
 
     if (jornadasPagar.rows.length === 0) {
