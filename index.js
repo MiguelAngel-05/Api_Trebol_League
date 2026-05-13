@@ -1202,12 +1202,25 @@ router.get('/:id_liga/ranking-jornada/:jornada', verifyToken, async (req, res) =
   try {
     const query = `
       SELECT 
-        u.id, u.username, u.avatar,
-        COALESCE(SUM(rp.puntos_totales), 0) as puntos_jornada
+        u.id,
+        u.username,
+        u.avatar,
+        COALESCE(SUM(
+          CASE 
+            WHEN p.id_partido IS NOT NULL THEN rp.puntos_totales 
+            ELSE 0 
+          END
+        ), 0) as puntos_jornada
       FROM users_liga ul
       JOIN users u ON ul.id_user = u.id
-      LEFT JOIN rendimiento_partido rp ON rp.id_user = ul.id_user 
-      LEFT JOIN partidos p ON rp.id_partido = p.id_partido AND p.jornada = $2
+      LEFT JOIN rendimiento_partido rp 
+        ON rp.id_user = ul.id_user
+      LEFT JOIN partidos p 
+        ON rp.id_partido = p.id_partido
+        AND p.id_liga = ul.id_liga
+        AND p.jornada = $2
+        AND p.estado = 'finalizado'
+        AND p.fecha_partido + interval '70 minutes' <= NOW()
       WHERE ul.id_liga = $1
       GROUP BY u.id, u.username, u.avatar
       ORDER BY puntos_jornada DESC, u.username ASC
@@ -2166,22 +2179,23 @@ router.get('/:id_liga/puntos-jornada', verifyToken, async (req, res) => {
   try {
     const query = `
       SELECT 
-        f.nombre, 
-        f.posicion, 
-        f.precio as valor,
+        COALESCE(f.nombre, 'Hueco vacío') AS nombre,
+        COALESCE(f.posicion, '-') AS posicion,
+        COALESCE(f.precio, 0) AS valor,
         rp.puntos_totales as puntos,
         rp.goles,
         rp.asistencias
       FROM rendimiento_partido rp
       JOIN partidos p ON rp.id_partido = p.id_partido
-      JOIN futbolistas f ON rp.id_futbolista = f.id_futbolista
-      WHERE p.id_liga = $1          -- <--- Cambiado de rp.id_liga a p.id_liga
+      LEFT JOIN futbolistas f ON rp.id_futbolista = f.id_futbolista
+      WHERE p.id_liga = $1
         AND rp.id_user = $2 
         AND p.jornada = $3
+        AND p.estado = 'finalizado'
+        AND p.fecha_partido + interval '70 minutes' <= NOW()
       ORDER BY rp.puntos_totales DESC;
     `;
     
-    // Asegúrate de pasar los parámetros como números para evitar conflictos de tipos
     const result = await db.query(query, [
       parseInt(id_liga), 
       parseInt(id_manager), 
@@ -2890,22 +2904,104 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
         await db.query(`INSERT INTO eventos_partido (id_partido, minuto, tipo_evento, id_futbolista, id_asistente, descripcion) VALUES ($1, $2, $3, $4, $5, $6)`, [partido.id_partido, ev.minuto, ev.tipo_evento, ev.id_futbolista, ev.id_asistente, ev.descripcion]);
       }
 
-      // --- PUNTOS + HABILIDADES ---
-      const mánagers = await db.query(`SELECT DISTINCT id_user FROM users_liga WHERE id_liga = $1`, [partido.id_liga]);
+      // --- PUNTOS + HABILIDADES DESDE ALINEACIÓN BLOQUEADA ---
+      const mánagers = await db.query(
+        `SELECT DISTINCT id_user FROM users_liga WHERE id_liga = $1`,
+        [partido.id_liga]
+      );
+
       for (const man of mánagers.rows) {
-        const suPlantilla = await db.query(`SELECT ful.*, f.nombre, f.codigo_habilidad FROM futbolista_user_liga ful JOIN futbolistas f ON ful.id_futbolista = f.id_futbolista WHERE ful.id_user = $1 AND ful.id_liga = $2 AND ful.es_titular = true`, [man.id_user, partido.id_liga]);
+        const alineacionRes = await db.query(`
+          SELECT
+            aj.id_liga,
+            aj.jornada,
+            aj.id_user,
+            aj.id_futbolista,
+            aj.hueco_plantilla,
+            aj.es_hueco_vacio,
+            aj.tipo_carta_snapshot,
+            aj.nombre_snapshot AS nombre,
+            aj.posicion_snapshot AS posicion,
+            aj.media_snapshot AS media,
+            aj.codigo_habilidad_snapshot AS codigo_habilidad
+          FROM alineaciones_jornada aj
+          WHERE aj.id_liga = $1
+            AND aj.jornada = $2
+            AND aj.id_user = $3
+          ORDER BY 
+            CASE 
+              WHEN aj.hueco_plantilla = 'hueco-12' THEN 12
+              ELSE CAST(REPLACE(aj.hueco_plantilla, 'hueco-', '') AS integer)
+            END ASC
+        `, [partido.id_liga, partido.jornada, man.id_user]);
+
+        let suPlantilla = alineacionRes.rows;
+
+        // Seguridad: si por algún motivo la jornada no estaba bloqueada, la bloqueamos y recargamos.
+        if (suPlantilla.length === 0) {
+          await bloquearAlineacionesJornada(Number(partido.id_liga), Number(partido.jornada));
+
+          const recarga = await db.query(`
+            SELECT
+              aj.id_liga,
+              aj.jornada,
+              aj.id_user,
+              aj.id_futbolista,
+              aj.hueco_plantilla,
+              aj.es_hueco_vacio,
+              aj.tipo_carta_snapshot,
+              aj.nombre_snapshot AS nombre,
+              aj.posicion_snapshot AS posicion,
+              aj.media_snapshot AS media,
+              aj.codigo_habilidad_snapshot AS codigo_habilidad
+            FROM alineaciones_jornada aj
+            WHERE aj.id_liga = $1
+              AND aj.jornada = $2
+              AND aj.id_user = $3
+            ORDER BY 
+              CASE 
+                WHEN aj.hueco_plantilla = 'hueco-12' THEN 12
+                ELSE CAST(REPLACE(aj.hueco_plantilla, 'hueco-', '') AS integer)
+              END ASC
+          `, [partido.id_liga, partido.jornada, man.id_user]);
+
+          suPlantilla = recarga.rows;
+        }
+
         let puntosTotalesManager = 0;
 
-        const jugador12 = suPlantilla.rows.find(j => j.hueco_plantilla === 'hueco-12');
+        const jugador12 = suPlantilla.find(j => j.hueco_plantilla === 'hueco-12' && !j.es_hueco_vacio);
         const ultraCode = jugador12 ? jugador12.codigo_habilidad : null;
-        let espejismoActivo = suPlantilla.rows.some(j => j.codigo_habilidad === 'HabEspecial_Espejismo' && j.hueco_plantilla !== 'hueco-12') && (Math.random() < 0.10);
-        let bonusLider = suPlantilla.rows.filter(j => j.codigo_habilidad === 'HabEspecial_LiderEspiritual' && j.hueco_plantilla !== 'hueco-12').length;
+
+        const jugadoresPuntuables = suPlantilla.filter(j => j.hueco_plantilla !== 'hueco-12');
+
+        const espejismoActivo =
+          jugadoresPuntuables.some(j => j.codigo_habilidad === 'HabEspecial_Espejismo' && !j.es_hueco_vacio) &&
+          (Math.random() < 0.10);
+
+        const bonusLider = jugadoresPuntuables.filter(
+          j => j.codigo_habilidad === 'HabEspecial_LiderEspiritual' && !j.es_hueco_vacio
+        ).length;
+
         let primeraRojaPerdonada = false;
 
-        for (const mio of suPlantilla.rows) {
-          if (mio.hueco_plantilla === 'hueco-12') continue;
-          
+        for (const mio of jugadoresPuntuables) {
+          // Penalización por hueco vacío. Hueco-12 ya está excluido.
+          if (mio.es_hueco_vacio) {
+            const puntosHueco = -3;
+
+            await db.query(`
+              INSERT INTO rendimiento_partido
+              (id_partido, id_futbolista, id_user, nota_base, puntos_totales, goles, asistencias, amarillas, rojas)
+              VALUES ($1, NULL, $2, NULL, $3, 0, 0, 0, 0)
+            `, [partido.id_partido, man.id_user, puntosHueco]);
+
+            puntosTotalesManager += puntosHueco;
+            continue;
+          }
+
           // Buscamos las estadísticas del partido por nombre.
+          // Esto mantiene la compatibilidad con cartas especiales que comparten nombre con su carta base.
           const stArray = Object.values(statsPartido);
           const st = stArray.find(s => s.nombre === mio.nombre);
 
@@ -2913,12 +3009,19 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
             const hab = mio.codigo_habilidad;
             let misPuntos = Math.round(parseFloat(st.nota_final));
             let multGoles = hab === 'HabEspecial_Francotirador' ? 10 : 5;
-            
+
             if (st.rojas > 0) {
-                if (ultraCode === 'HabUltra_Wade' && !primeraRojaPerdonada) { primeraRojaPerdonada = true; } else if (hab !== 'HabEspecial_JuegoCaballeros') { misPuntos -= 5; }
-            } else if (st.amarillas > 0 && hab !== 'HabEspecial_JuegoCaballeros') { misPuntos -= 2; }
+              if (ultraCode === 'HabUltra_Wade' && !primeraRojaPerdonada) {
+                primeraRojaPerdonada = true;
+              } else if (hab !== 'HabEspecial_JuegoCaballeros') {
+                misPuntos -= 5;
+              }
+            } else if (st.amarillas > 0 && hab !== 'HabEspecial_JuegoCaballeros') {
+              misPuntos -= 2;
+            }
 
             misPuntos += (st.goles * multGoles) + (st.asistencias * 3);
+
             const isLocal = st.equipo === partido.equipo_local;
             const golesEquipo = isLocal ? golesLocal : golesVisit;
             const golesRival = isLocal ? golesVisit : golesLocal;
@@ -2927,10 +3030,18 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
 
             if (hab === 'HabEspecial_Egoista' && st.goles > 0 && st.goles === golesEquipo) misPuntos += 10;
             if (hab === 'HabEspecial_EfectoBolaNieve') misPuntos += golesEquipo;
-            if (hab === 'HabEspecial_HeroeAgonico' && win && eventos.some(e => e.id_futbolista === st.id_futbolista && e.minuto >= 50 && e.tipo_evento === 'gol')) misPuntos += 8;
+
+            if (
+              hab === 'HabEspecial_HeroeAgonico' &&
+              win &&
+              eventos.some(e => e.id_futbolista === st.id_futbolista && e.minuto >= 50 && e.tipo_evento === 'gol')
+            ) {
+              misPuntos += 8;
+            }
+
             if (hab === 'HabEspecial_CerrojoAbsoluto' && golesRival === 0) misPuntos = Math.round(misPuntos * 1.5);
             if (hab === 'HabEspecial_SalvadorAlambre' && win && (golesEquipo - golesRival === 1)) misPuntos += 7;
-            if (hab === 'HabEspecial_TodoONada') { misPuntos = win ? misPuntos * 2 : 0; }
+            if (hab === 'HabEspecial_TodoONada') misPuntos = win ? misPuntos * 2 : 0;
             if (hab === 'HabEspecial_DadoDelCaos') misPuntos += (Math.random() > 0.5 ? 10 : -5);
             if (hab === 'HabEspecial_ImanFaltas') misPuntos += Math.floor(Math.random() * 5) + 1;
             if (hab === 'HabEspecial_Trotamundos' && !isLocal) misPuntos += 3;
@@ -2944,9 +3055,9 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
             if (ultraCode === 'HabUltra_Wade') misPuntos = Math.round(misPuntos * 1.10);
             if (ultraCode === 'HabUltra_Cuestarriba' && (st.posicion === 'DF' || st.posicion === 'MC')) misPuntos += 3;
             if (ultraCode === 'HabUltra_Evil' && st.posicion === 'DL') {
-                const golesLocalHT = eventos.filter(e => e.tipo_evento === 'gol' && e.minuto <= 30 && local.titulares.some(j=>j.id_futbolista === e.id_futbolista)).length;
-                const golesVisitHT = eventos.filter(e => e.tipo_evento === 'gol' && e.minuto <= 30 && visit.titulares.some(j=>j.id_futbolista === e.id_futbolista)).length;
-                if ((isLocal && golesLocalHT < golesVisitHT) || (!isLocal && golesVisitHT < golesLocalHT)) misPuntos = Math.round(misPuntos * 1.30);
+              const golesLocalHT = eventos.filter(e => e.tipo_evento === 'gol' && e.minuto <= 30 && local.titulares.some(j => j.id_futbolista === e.id_futbolista)).length;
+              const golesVisitHT = eventos.filter(e => e.tipo_evento === 'gol' && e.minuto <= 30 && visit.titulares.some(j => j.id_futbolista === e.id_futbolista)).length;
+              if ((isLocal && golesLocalHT < golesVisitHT) || (!isLocal && golesVisitHT < golesLocalHT)) misPuntos = Math.round(misPuntos * 1.30);
             }
             if (ultraCode === 'HabUltra_Forti' && st.posicion === 'MC') misPuntos += 4;
             if (ultraCode === 'HabUltra_Modric' && st.posicion === 'MC') misPuntos = Math.round(misPuntos * 1.20);
@@ -2957,13 +3068,35 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
             if (ultraCode === 'HabUltra_Churumbel') misPuntos += 5;
 
             misPuntos = Math.round(misPuntos);
-            
-            // Guardamos el rendimiento vinculándolo al ID de tu carta (la especial/ultra), para que salga bien en tu app.
-            await db.query(`INSERT INTO rendimiento_partido (id_partido, id_futbolista, id_user, nota_base, puntos_totales, goles, asistencias, amarillas, rojas) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`, [partido.id_partido, mio.id_futbolista, man.id_user, st.nota_final, misPuntos, st.goles, st.asistencias, st.amarillas, st.rojas]);
+
+            await db.query(`
+              INSERT INTO rendimiento_partido
+              (id_partido, id_futbolista, id_user, nota_base, puntos_totales, goles, asistencias, amarillas, rojas)
+              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            `, [
+              partido.id_partido,
+              mio.id_futbolista,
+              man.id_user,
+              st.nota_final,
+              misPuntos,
+              st.goles,
+              st.asistencias,
+              st.amarillas,
+              st.rojas
+            ]);
+
             puntosTotalesManager += misPuntos;
           }
         }
-        if (puntosTotalesManager !== 0) await db.query(`UPDATE users_liga SET puntos = puntos + $1 WHERE id_user = $2 AND id_liga = $3`, [puntosTotalesManager, man.id_user, partido.id_liga]);
+
+        if (puntosTotalesManager !== 0) {
+          await db.query(`
+            UPDATE users_liga
+            SET puntos = puntos + $1
+            WHERE id_user = $2
+              AND id_liga = $3
+          `, [puntosTotalesManager, man.id_user, partido.id_liga]);
+        }
       }
       await db.query('COMMIT');
     }
@@ -3001,11 +3134,25 @@ app.get('/api/cron/premios-jornada', async (req, res) => {
       
       // Obtener el ranking exacto de esa jornada
       const ranking = await db.query(`
-        SELECT ul.id_user, u.username, COALESCE(SUM(rp.puntos_totales), 0) as puntos_jornada
+        SELECT 
+          ul.id_user,
+          u.username,
+          COALESCE(SUM(
+            CASE 
+              WHEN p.id_partido IS NOT NULL THEN rp.puntos_totales 
+              ELSE 0 
+            END
+          ), 0) as puntos_jornada
         FROM users_liga ul
         JOIN users u ON ul.id_user = u.id
-        LEFT JOIN rendimiento_partido rp ON rp.id_user = ul.id_user 
-        LEFT JOIN partidos p ON rp.id_partido = p.id_partido AND p.jornada = $2
+        LEFT JOIN rendimiento_partido rp 
+          ON rp.id_user = ul.id_user
+        LEFT JOIN partidos p 
+          ON rp.id_partido = p.id_partido
+          AND p.id_liga = ul.id_liga
+          AND p.jornada = $2
+          AND p.estado = 'finalizado'
+          AND p.fecha_partido + interval '70 minutes' <= NOW()
         WHERE ul.id_liga = $1
         GROUP BY ul.id_user, u.username
         ORDER BY puntos_jornada DESC
