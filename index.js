@@ -492,8 +492,14 @@ router.get('/:id_liga/club/:nombre_club', verifyToken, async (req, res) => {
 
     // 2. Último Partido
     const ultimoPartidoRes = await db.query(`
-      SELECT * FROM partidos WHERE id_liga = $1 AND (equipo_local = $2 OR equipo_visitante = $2) AND estado = 'finalizado'
-      ORDER BY fecha_partido DESC LIMIT 1
+      SELECT * 
+      FROM partidos 
+      WHERE id_liga = $1 
+        AND (equipo_local = $2 OR equipo_visitante = $2) 
+        AND estado = 'finalizado'
+        AND fecha_partido + interval '70 minutes' <= NOW()
+      ORDER BY fecha_partido DESC 
+      LIMIT 1
     `, [id_liga, nombre_club]);
 
     let ultimoPartido = null;
@@ -512,7 +518,11 @@ router.get('/:id_liga/club/:nombre_club', verifyToken, async (req, res) => {
       FROM eventos_partido e 
       JOIN partidos p ON e.id_partido = p.id_partido 
       JOIN futbolistas f ON e.id_futbolista = f.id_futbolista 
-      WHERE p.id_liga = $1 AND f.equipo = $2 AND e.tipo_evento IN ('lesion', 'roja', 'amarilla')
+      WHERE p.id_liga = $1 
+        AND f.equipo = $2 
+        AND e.tipo_evento IN ('lesion', 'roja', 'amarilla')
+        AND p.estado = 'finalizado'
+        AND p.fecha_partido + interval '70 minutes' <= NOW()
       ORDER BY p.fecha_partido DESC, e.minuto DESC 
       LIMIT 15
     `, [id_liga, nombre_club]);
@@ -1846,32 +1856,57 @@ router.get('/:id_liga/clasificacion-clubes', verifyToken, async (req, res) => {
   try {
     const query = `
       WITH Equipos AS (
-        SELECT DISTINCT equipo FROM futbolistas WHERE equipo != 'Real Trébol FC'
+        SELECT DISTINCT equipo 
+        FROM futbolistas 
+        WHERE equipo != 'Real Trébol FC'
       ),
       Resultados AS (
-        SELECT equipo_local AS equipo, goles_local AS gf, goles_visitante AS gc, 
+        SELECT 
+          equipo_local AS equipo, 
+          goles_local AS gf, 
+          goles_visitante AS gc, 
           CASE WHEN goles_local > goles_visitante THEN 1 ELSE 0 END AS pg, 
           CASE WHEN goles_local = goles_visitante THEN 1 ELSE 0 END AS pe, 
           CASE WHEN goles_local < goles_visitante THEN 1 ELSE 0 END AS pp, 
-          CASE WHEN goles_local > goles_visitante THEN 3 WHEN goles_local = goles_visitante THEN 1 ELSE 0 END AS pts
-        FROM partidos WHERE id_liga = $1 AND estado = 'finalizado'
+          CASE 
+            WHEN goles_local > goles_visitante THEN 3 
+            WHEN goles_local = goles_visitante THEN 1 
+            ELSE 0 
+          END AS pts
+        FROM partidos 
+        WHERE id_liga = $1 
+          AND estado = 'finalizado'
+          AND fecha_partido + interval '70 minutes' <= NOW()
+
         UNION ALL
-        SELECT equipo_visitante AS equipo, goles_visitante AS gf, goles_local AS gc, 
+
+        SELECT 
+          equipo_visitante AS equipo, 
+          goles_visitante AS gf, 
+          goles_local AS gc, 
           CASE WHEN goles_visitante > goles_local THEN 1 ELSE 0 END AS pg, 
           CASE WHEN goles_visitante = goles_local THEN 1 ELSE 0 END AS pe, 
           CASE WHEN goles_visitante < goles_local THEN 1 ELSE 0 END AS pp, 
-          CASE WHEN goles_visitante > goles_local THEN 3 WHEN goles_visitante = goles_local THEN 1 ELSE 0 END AS pts
-        FROM partidos WHERE id_liga = $1 AND estado = 'finalizado'
+          CASE 
+            WHEN goles_visitante > goles_local THEN 3 
+            WHEN goles_visitante = goles_local THEN 1 
+            ELSE 0 
+          END AS pts
+        FROM partidos 
+        WHERE id_liga = $1 
+          AND estado = 'finalizado'
+          AND fecha_partido + interval '70 minutes' <= NOW()
       )
-      SELECT e.equipo, 
-             COALESCE(COUNT(r.equipo), 0) AS pj, 
-             COALESCE(SUM(r.pg), 0) AS pg, 
-             COALESCE(SUM(r.pe), 0) AS pe, 
-             COALESCE(SUM(r.pp), 0) AS pp, 
-             COALESCE(SUM(r.gf), 0) AS gf, 
-             COALESCE(SUM(r.gc), 0) AS gc, 
-             COALESCE(SUM(r.gf) - SUM(r.gc), 0) AS dif, 
-             COALESCE(SUM(r.pts), 0) AS puntos_totales
+      SELECT 
+        e.equipo, 
+        COALESCE(COUNT(r.equipo), 0) AS pj, 
+        COALESCE(SUM(r.pg), 0) AS pg, 
+        COALESCE(SUM(r.pe), 0) AS pe, 
+        COALESCE(SUM(r.pp), 0) AS pp, 
+        COALESCE(SUM(r.gf), 0) AS gf, 
+        COALESCE(SUM(r.gc), 0) AS gc, 
+        COALESCE(SUM(r.gf) - SUM(r.gc), 0) AS dif, 
+        COALESCE(SUM(r.pts), 0) AS puntos_totales
       FROM Equipos e
       LEFT JOIN Resultados r ON e.equipo = r.equipo
       GROUP BY e.equipo 
