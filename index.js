@@ -3479,11 +3479,13 @@ app.get('/api/cron/premios-jornada', async (req, res) => {
 
         let premio = 0;
 
-        if (puntos > 0 && puntos >= 0) {
+        if (puntos > 0) {
           premio += puntos * 100000;
         }
 
-        premio += bonusPorPuesto[i] || 0;
+        if (puntos >= 0) {
+          premio += bonusPorPuesto[i] || 0;
+        }
 
         if (premio > 0) {
           // Ingresar dinero
