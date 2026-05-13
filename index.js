@@ -628,6 +628,27 @@ router.delete('/:id_liga', verifyToken, requireLeagueRole(['owner']), async (req
 app.get('/api/mis-ligas', verifyToken, async (req, res) => {
   try {
     const result = await db.query(`
+      WITH jornadas_finalizadas AS (
+        SELECT id_liga, jornada
+        FROM partidos
+        GROUP BY id_liga, jornada
+        HAVING BOOL_AND(
+          estado = 'finalizado'
+          AND fecha_partido + interval '70 minutes' <= NOW()
+        )
+      ),
+      puntos_visibles AS (
+        SELECT 
+          p.id_liga,
+          rp.id_user,
+          SUM(rp.puntos_totales) AS puntos
+        FROM rendimiento_partido rp
+        JOIN partidos p ON p.id_partido = rp.id_partido
+        JOIN jornadas_finalizadas jf
+          ON jf.id_liga = p.id_liga
+          AND jf.jornada = p.jornada
+        GROUP BY p.id_liga, rp.id_user
+      )
       SELECT 
         l.id_liga,
         l.nombre,
@@ -636,34 +657,16 @@ app.get('/api/mis-ligas', verifyToken, async (req, res) => {
         ul.dinero,
         ul.rol,
 
-        COALESCE(SUM(
-          CASE 
-            WHEN p.id_partido IS NOT NULL THEN rp.puntos_totales 
-            ELSE 0 
-          END
-        ), 0) AS puntos
+        COALESCE(pv.puntos, 0) AS puntos
 
       FROM users_liga ul
       JOIN ligas l ON l.id_liga = ul.id_liga
 
-      LEFT JOIN rendimiento_partido rp 
-        ON rp.id_user = ul.id_user
-
-      LEFT JOIN partidos p 
-        ON p.id_partido = rp.id_partido
-        AND p.id_liga = ul.id_liga
-        AND p.estado = 'finalizado'
-        AND p.fecha_partido + interval '70 minutes' <= NOW()
+      LEFT JOIN puntos_visibles pv
+        ON pv.id_liga = ul.id_liga
+        AND pv.id_user = ul.id_user
 
       WHERE ul.id_user = $1
-
-      GROUP BY 
-        l.id_liga,
-        l.nombre,
-        l.numero_jugadores,
-        l.max_jugadores,
-        ul.dinero,
-        ul.rol
 
       ORDER BY l.id_liga DESC
     `, [req.user.id]);
@@ -2309,6 +2312,28 @@ router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
 
   try {
     const result = await db.query(`
+      WITH jornadas_finalizadas AS (
+        SELECT id_liga, jornada
+        FROM partidos
+        WHERE id_liga = $1
+        GROUP BY id_liga, jornada
+        HAVING BOOL_AND(
+          estado = 'finalizado'
+          AND fecha_partido + interval '70 minutes' <= NOW()
+        )
+      ),
+      puntos_visibles AS (
+        SELECT 
+          rp.id_user,
+          SUM(rp.puntos_totales) AS puntos
+        FROM rendimiento_partido rp
+        JOIN partidos p ON p.id_partido = rp.id_partido
+        JOIN jornadas_finalizadas jf
+          ON jf.id_liga = p.id_liga
+          AND jf.jornada = p.jornada
+        WHERE p.id_liga = $1
+        GROUP BY rp.id_user
+      )
       SELECT 
         u.id,
         u.username,
@@ -2316,12 +2341,7 @@ router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
         ul.rol,
         ul.dinero AS presupuesto,
 
-        COALESCE(SUM(
-          CASE 
-            WHEN p.id_partido IS NOT NULL THEN rp.puntos_totales 
-            ELSE 0 
-          END
-        ), 0) AS puntos,
+        COALESCE(pv.puntos, 0) AS puntos,
 
         (
           SELECT COUNT(*) 
@@ -2332,24 +2352,9 @@ router.get('/:id_liga/clasificacion', verifyToken, async (req, res) => {
 
       FROM users_liga ul
       JOIN users u ON ul.id_user = u.id
-
-      LEFT JOIN rendimiento_partido rp 
-        ON rp.id_user = ul.id_user
-
-      LEFT JOIN partidos p 
-        ON p.id_partido = rp.id_partido
-        AND p.id_liga = ul.id_liga
-        AND p.estado = 'finalizado'
-        AND p.fecha_partido + interval '70 minutes' <= NOW()
+      LEFT JOIN puntos_visibles pv ON pv.id_user = ul.id_user
 
       WHERE ul.id_liga = $1
-
-      GROUP BY 
-        u.id,
-        u.username,
-        u.avatar,
-        ul.rol,
-        ul.dinero
 
       ORDER BY puntos DESC, u.username ASC
     `, [id_liga]);
@@ -3383,14 +3388,6 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
           }
         }
 
-        if (puntosTotalesManager !== 0) {
-          await db.query(`
-            UPDATE users_liga
-            SET puntos = puntos + $1
-            WHERE id_user = $2
-              AND id_liga = $3
-          `, [puntosTotalesManager, man.id_user, partido.id_liga]);
-        }
       }
       await db.query('COMMIT');
     }
@@ -3519,7 +3516,158 @@ app.get('/api/cron/premios-jornada', async (req, res) => {
   }
 });
 
+router.post('/:id_liga/reparar-penalizaciones-antiguas', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
+  const { id_liga } = req.params;
 
+  try {
+    await db.query('BEGIN');
+
+    const jornadasRes = await db.query(`
+      SELECT DISTINCT jornada
+      FROM partidos
+      WHERE id_liga = $1
+        AND fecha_partido <= NOW()
+      ORDER BY jornada ASC
+    `, [id_liga]);
+
+    const huecosObligatorios = [
+      'hueco-1',
+      'hueco-2',
+      'hueco-3',
+      'hueco-4',
+      'hueco-5',
+      'hueco-6',
+      'hueco-7',
+      'hueco-8',
+      'hueco-9',
+      'hueco-10',
+      'hueco-11'
+    ];
+
+    let jornadasProcesadas = 0;
+    let penalizacionesInsertadas = 0;
+
+    for (const j of jornadasRes.rows) {
+      const jornada = j.jornada;
+
+      const usuariosRes = await db.query(`
+        SELECT id_user
+        FROM users_liga
+        WHERE id_liga = $1
+      `, [id_liga]);
+
+      const partidoReferenciaRes = await db.query(`
+        SELECT id_partido
+        FROM partidos
+        WHERE id_liga = $1
+          AND jornada = $2
+        ORDER BY fecha_partido ASC
+        LIMIT 1
+      `, [id_liga, jornada]);
+
+      if (partidoReferenciaRes.rows.length === 0) {
+        continue;
+      }
+
+      const idPartidoReferencia = partidoReferenciaRes.rows[0].id_partido;
+
+      for (const usuario of usuariosRes.rows) {
+        const idUser = usuario.id_user;
+
+        const alineacionExiste = await db.query(`
+          SELECT 1
+          FROM alineaciones_jornada
+          WHERE id_liga = $1
+            AND jornada = $2
+            AND id_user = $3
+          LIMIT 1
+        `, [id_liga, jornada, idUser]);
+
+        if (alineacionExiste.rows.length === 0) {
+          for (const hueco of huecosObligatorios) {
+            await db.query(`
+              INSERT INTO alineaciones_jornada (
+                id_liga,
+                jornada,
+                id_user,
+                id_futbolista,
+                hueco_plantilla,
+                es_hueco_vacio
+              )
+              VALUES ($1, $2, $3, NULL, $4, true)
+              ON CONFLICT (id_liga, jornada, id_user, hueco_plantilla) DO NOTHING
+            `, [id_liga, jornada, idUser, hueco]);
+          }
+        }
+
+        const yaPenalizado = await db.query(`
+          SELECT 1
+          FROM rendimiento_partido rp
+          JOIN partidos p ON p.id_partido = rp.id_partido
+          WHERE p.id_liga = $1
+            AND p.jornada = $2
+            AND rp.id_user = $3
+            AND rp.tipo_registro = 'hueco_vacio'
+          LIMIT 1
+        `, [id_liga, jornada, idUser]);
+
+        if (yaPenalizado.rows.length > 0) {
+          continue;
+        }
+
+        const huecosVaciosRes = await db.query(`
+          SELECT hueco_plantilla
+          FROM alineaciones_jornada
+          WHERE id_liga = $1
+            AND jornada = $2
+            AND id_user = $3
+            AND es_hueco_vacio = true
+            AND hueco_plantilla != 'hueco-12'
+        `, [id_liga, jornada, idUser]);
+
+        for (const hueco of huecosVaciosRes.rows) {
+          await db.query(`
+            INSERT INTO rendimiento_partido (
+              id_partido,
+              id_futbolista,
+              id_user,
+              nota_base,
+              puntos_totales,
+              goles,
+              asistencias,
+              amarillas,
+              rojas,
+              tipo_registro,
+              hueco_plantilla
+            )
+            VALUES ($1, NULL, $2, NULL, -3, 0, 0, 0, 0, 'hueco_vacio', $3)
+          `, [
+            idPartidoReferencia,
+            idUser,
+            hueco.hueco_plantilla
+          ]);
+
+          penalizacionesInsertadas++;
+        }
+      }
+
+      jornadasProcesadas++;
+    }
+
+    await db.query('COMMIT');
+
+    res.json({
+      message: 'Penalizaciones antiguas reparadas',
+      jornadas_procesadas: jornadasProcesadas,
+      penalizaciones_insertadas: penalizacionesInsertadas
+    });
+
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error('Error reparando penalizaciones antiguas:', err);
+    res.status(500).json({ message: 'Error reparando penalizaciones antiguas' });
+  }
+});
 
 app.use('/api/ligas', router);
 app.use('/api/mercado', mercadoRouter);
