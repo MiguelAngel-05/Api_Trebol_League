@@ -678,6 +678,122 @@ app.get('/api/mis-ligas', verifyToken, async (req, res) => {
   }
 });
 
+// Salir de una liga
+router.delete('/:id_liga/salir', verifyToken, async (req, res) => {
+  const { id_liga } = req.params;
+  const idUser = req.user.id;
+
+  try {
+    await db.query('BEGIN');
+
+    const userLigaRes = await db.query(`
+      SELECT rol
+      FROM users_liga
+      WHERE id_liga = $1
+        AND id_user = $2
+      FOR UPDATE
+    `, [id_liga, idUser]);
+
+    if (userLigaRes.rows.length === 0) {
+      await db.query('ROLLBACK');
+      return res.status(404).json({ message: 'No perteneces a esta liga' });
+    }
+
+    const rol = userLigaRes.rows[0].rol;
+
+    if (rol === 'owner') {
+      await db.query('ROLLBACK');
+      return res.status(400).json({
+        message: 'El creador no puede salir de la liga. Debe eliminar la liga o transferir la propiedad.'
+      });
+    }
+
+    // Eliminar pujas del usuario en esa liga
+    await db.query(`
+      DELETE FROM pujas
+      WHERE id_liga = $1
+        AND id_user = $2
+    `, [id_liga, idUser]);
+
+    // Eliminar ofertas privadas donde participa
+    await db.query(`
+      DELETE FROM ofertas_privadas
+      WHERE id_liga = $1
+        AND (id_comprador = $2 OR id_vendedor = $2)
+    `, [id_liga, idUser]);
+
+    // Eliminar mensajes privados enviados o recibidos
+    await db.query(`
+      DELETE FROM mensajes_privados
+      WHERE id_liga = $1
+        AND (id_remitente = $2 OR id_destinatario = $2)
+    `, [id_liga, idUser]);
+
+    // Eliminar mensajes del chat general del usuario
+    await db.query(`
+      DELETE FROM chat_general
+      WHERE id_liga = $1
+        AND id_user = $2
+    `, [id_liga, idUser]);
+
+    // Eliminar jugadores del usuario en esa liga
+    await db.query(`
+      DELETE FROM futbolista_user_liga
+      WHERE id_liga = $1
+        AND id_user = $2
+    `, [id_liga, idUser]);
+
+    // Eliminar alineaciones bloqueadas del usuario en esa liga
+    await db.query(`
+      DELETE FROM alineaciones_jornada
+      WHERE id_liga = $1
+        AND id_user = $2
+    `, [id_liga, idUser]);
+
+    // Eliminar rendimiento del usuario en partidos de esa liga
+    await db.query(`
+      DELETE FROM rendimiento_partido
+      WHERE id_user = $1
+        AND id_partido IN (
+          SELECT id_partido
+          FROM partidos
+          WHERE id_liga = $2
+        )
+    `, [idUser, id_liga]);
+
+    // Eliminar historial de transferencias donde participa el usuario
+    await db.query(`
+      DELETE FROM historial_transferencias
+      WHERE id_liga = $1
+        AND (id_comprador = $2 OR id_vendedor = $2)
+    `, [id_liga, idUser]);
+
+    // Sacar al usuario de la liga
+    await db.query(`
+      DELETE FROM users_liga
+      WHERE id_liga = $1
+        AND id_user = $2
+    `, [id_liga, idUser]);
+
+    // Actualizar contador de jugadores
+    await db.query(`
+      UPDATE ligas
+      SET numero_jugadores = GREATEST(0, numero_jugadores - 1)
+      WHERE id_liga = $1
+    `, [id_liga]);
+
+    await db.query('COMMIT');
+
+    res.json({ message: 'Has salido de la liga correctamente' });
+
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error('Error saliendo de la liga:', err);
+    res.status(500).json({ message: 'Error al salir de la liga' });
+  }
+});
+
+
 // --- RUTAS DE Mi plantilla y Plantilla Rival ---
 // Obtener mis jugadores de la liga
 router.get('/:id_liga/mis-jugadores', verifyToken, async (req, res) => {
