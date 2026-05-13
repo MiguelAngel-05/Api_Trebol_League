@@ -916,41 +916,76 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
 
   try {
     const mercadoActual = await db.query(`
-      SELECT fecha_generacion FROM mercado_liga WHERE id_liga = $1 LIMIT 1
+      SELECT fecha_generacion 
+      FROM mercado_liga 
+      WHERE id_liga = $1 
+      LIMIT 1
     `, [id_liga]);
 
     const mercado = await db.query(`
-      -- PARTE 1: JUGADORES DE LA BANCA (Filtrando al Real Trébol)
+      -- PARTE 1: JUGADORES DEL MERCADO DEL SISTEMA
+      -- Aquí sí excluimos Real Trébol FC para que los ultras no salgan libres en mercado
       SELECT 
-        f.id_futbolista, f.nombre, f.posicion, f.equipo, f.media, f.precio as precio, 
-        NULL::int as id_vendedor, NULL::text as vendedor_name,
+        f.id_futbolista,
+        f.nombre,
+        f.posicion,
+        f.equipo,
+        f.media,
+        f.precio as precio,
+        NULL::int as id_vendedor,
+        NULL::text as vendedor_name,
         CASE WHEN p.id_user IS NOT NULL THEN true ELSE false END as pujado_por_mi,
         COALESCE(p.monto, 0) as mi_puja_actual,
-        f.imagen, f.ataque, f.defensa, f.parada, f.pase,
-        f.tipo_carta, f.codigo_habilidad, f.descripcion
+        f.imagen,
+        f.ataque,
+        f.defensa,
+        f.parada,
+        f.pase,
+        f.tipo_carta,
+        f.codigo_habilidad,
+        f.descripcion
       FROM mercado_liga ml
       JOIN futbolistas f ON f.id_futbolista = ml.id_futbolista
-      LEFT JOIN pujas p ON p.id_futbolista = f.id_futbolista AND p.id_liga = $1 AND p.id_user = $2
+      LEFT JOIN pujas p 
+        ON p.id_futbolista = f.id_futbolista 
+        AND p.id_liga = $1 
+        AND p.id_user = $2
       WHERE ml.id_liga = $1 
-        AND f.equipo != 'Real Trébol FC' -- <--- Veto a los dioses en la banca
+        AND f.equipo != 'Real Trébol FC'
 
-      UNION
+      UNION ALL
 
-      -- PARTE 2: JUGADORES DE OTROS USUARIOS (Filtrando al Real Trébol)
+      -- PARTE 2: JUGADORES PUESTOS EN VENTA POR USUARIOS
+      -- Aquí NO excluimos Real Trébol FC, porque un usuario sí puede vender un ultra
       SELECT 
-        f.id_futbolista, f.nombre, f.posicion, f.equipo, f.media, ful.precio_venta as precio, 
-        ful.id_user as id_vendedor, u.username as vendedor_name, false as pujado_por_mi, 0 as mi_puja_actual,
-        f.imagen, f.ataque, f.defensa, f.parada, f.pase,
-        f.tipo_carta, f.codigo_habilidad, f.descripcion
+        f.id_futbolista,
+        f.nombre,
+        f.posicion,
+        f.equipo,
+        f.media,
+        ful.precio_venta as precio,
+        ful.id_user as id_vendedor,
+        u.username as vendedor_name,
+        false as pujado_por_mi,
+        0 as mi_puja_actual,
+        f.imagen,
+        f.ataque,
+        f.defensa,
+        f.parada,
+        f.pase,
+        f.tipo_carta,
+        f.codigo_habilidad,
+        f.descripcion
       FROM futbolista_user_liga ful
       JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
       JOIN users u ON u.id = ful.id_user
       WHERE ful.id_liga = $1 
-        AND ful.en_venta = true 
-        AND f.equipo != 'Real Trébol FC' -- <--- Veto a los dioses en ventas de usuarios
+        AND ful.en_venta = true
     `, [id_liga, idUser]);
 
-    const fechaGen = mercadoActual.rows.length ? mercadoActual.rows[0].fecha_generacion : new Date();
+    const fechaGen = mercadoActual.rows.length 
+      ? mercadoActual.rows[0].fecha_generacion 
+      : new Date();
 
     res.json({
       jugadores: mercado.rows,
@@ -958,7 +993,7 @@ mercadoRouter.get('/:id_liga', verifyToken, async (req, res) => {
     });
 
   } catch (err) {
-    console.error(err);
+    console.error('Error obteniendo mercado:', err);
     res.status(500).json({ message: 'Error obteniendo mercado' });
   }
 });
@@ -1034,28 +1069,108 @@ mercadoRouter.delete('/pujar', verifyToken, async (req, res) => {
 
 // Comprar jugador directamente a otro usuario (Desde Mercado)
 mercadoRouter.post('/compra-directa', verifyToken, async (req, res) => {
-  const { id_liga, id_futbolista, id_vendedor, precio } = req.body;
+  const { id_liga, id_futbolista, id_vendedor } = req.body;
   const idComprador = req.user.id;
 
+  if (!id_liga || !id_futbolista || !id_vendedor) {
+    return res.status(400).json({ message: 'Datos incompletos' });
+  }
+
+  if (Number(idComprador) === Number(id_vendedor)) {
+    return res.status(400).json({ message: 'No puedes comprar tu propio jugador' });
+  }
+
   try {
-    await db.query('UPDATE users_liga SET dinero = dinero - $1 WHERE id_user = $2 AND id_liga = $3', [precio, idComprador, id_liga]);
-    await db.query('UPDATE users_liga SET dinero = dinero + $1 WHERE id_user = $2 AND id_liga = $3', [precio, id_vendedor, id_liga]);
+    await db.query('BEGIN');
 
-    await db.query(
-      `UPDATE futbolista_user_liga SET id_user = $1, en_venta = false, precio_venta = 0 
-       WHERE id_user = $2 AND id_liga = $3 AND id_futbolista = $4`,
-      [idComprador, id_vendedor, id_liga, id_futbolista]
-    );
+    const ventaRes = await db.query(`
+      SELECT 
+        ful.precio_venta,
+        f.nombre
+      FROM futbolista_user_liga ful
+      JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
+      WHERE ful.id_liga = $1
+        AND ful.id_user = $2
+        AND ful.id_futbolista = $3
+        AND ful.en_venta = true
+      FOR UPDATE
+    `, [id_liga, id_vendedor, id_futbolista]);
 
-    await db.query(
-      `INSERT INTO historial_transferencias (id_liga, id_futbolista, id_vendedor, id_comprador, monto, tipo)
-       VALUES ($1, $2, $3, $4, $5, 'compra_usuario')`,
-      [id_liga, id_futbolista, id_vendedor, idComprador, precio]
-    );
+    if (ventaRes.rows.length === 0) {
+      throw new Error('El jugador ya no está en venta');
+    }
+
+    const precio = Number(ventaRes.rows[0].precio_venta);
+
+    if (!precio || precio <= 0) {
+      throw new Error('Precio de venta no válido');
+    }
+
+    const compradorRes = await db.query(`
+      SELECT dinero
+      FROM users_liga
+      WHERE id_liga = $1 
+        AND id_user = $2
+      FOR UPDATE
+    `, [id_liga, idComprador]);
+
+    if (compradorRes.rows.length === 0) {
+      throw new Error('No perteneces a esta liga');
+    }
+
+    if (Number(compradorRes.rows[0].dinero) < precio) {
+      throw new Error('No tienes suficiente dinero');
+    }
+
+    await db.query(`
+      UPDATE users_liga 
+      SET dinero = dinero - $1 
+      WHERE id_user = $2 
+        AND id_liga = $3
+    `, [precio, idComprador, id_liga]);
+
+    await db.query(`
+      UPDATE users_liga 
+      SET dinero = dinero + $1 
+      WHERE id_user = $2 
+        AND id_liga = $3
+    `, [precio, id_vendedor, id_liga]);
+
+    await db.query(`
+      UPDATE futbolista_user_liga 
+      SET 
+        id_user = $1,
+        en_venta = false,
+        precio_venta = 0,
+        es_titular = false,
+        hueco_plantilla = NULL
+      WHERE id_user = $2 
+        AND id_liga = $3 
+        AND id_futbolista = $4
+    `, [idComprador, id_vendedor, id_liga, id_futbolista]);
+
+    await db.query(`
+      UPDATE ofertas_privadas
+      SET estado = 'caducada'
+      WHERE id_liga = $1
+        AND id_futbolista = $2
+        AND estado = 'pendiente'
+    `, [id_liga, id_futbolista]);
+
+    await db.query(`
+      INSERT INTO historial_transferencias 
+      (id_liga, id_futbolista, id_vendedor, id_comprador, monto, tipo)
+      VALUES ($1, $2, $3, $4, $5, 'compra_usuario')
+    `, [id_liga, id_futbolista, id_vendedor, idComprador, precio]);
+
+    await db.query('COMMIT');
 
     res.json({ message: 'Fichaje realizado con éxito' });
+
   } catch (err) {
-    res.status(500).json({ message: 'Error en la transacción' });
+    await db.query('ROLLBACK');
+    console.error('Error en compra directa:', err);
+    res.status(400).json({ message: err.message || 'Error en la transacción' });
   }
 });
 
