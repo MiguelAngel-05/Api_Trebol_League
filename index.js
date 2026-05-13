@@ -2244,36 +2244,126 @@ router.get('/:id_liga/puntos-jornada', verifyToken, async (req, res) => {
   const { id_liga } = req.params;
   const { id_manager, jornada } = req.query;
 
+  if (!id_manager || !jornada) {
+    return res.status(400).json({ message: 'Manager y jornada requeridos' });
+  }
+
   try {
-    const query = `
+    const jornadaFinalizadaRes = await db.query(`
       SELECT 
-        COALESCE(f.nombre, 'Hueco vacío') AS nombre,
-        COALESCE(f.posicion, '-') AS posicion,
-        COALESCE(f.precio, 0) AS valor,
-        rp.puntos_totales as puntos,
-        rp.goles,
-        rp.asistencias
-      FROM rendimiento_partido rp
-      JOIN partidos p ON rp.id_partido = p.id_partido
-      LEFT JOIN futbolistas f ON rp.id_futbolista = f.id_futbolista
-      WHERE p.id_liga = $1
-        AND rp.id_user = $2 
-        AND p.jornada = $3
-        AND p.estado = 'finalizado'
-        AND p.fecha_partido + interval '70 minutes' <= NOW()
-      ORDER BY rp.puntos_totales DESC;
+        COUNT(*) > 0 AS existe_jornada,
+        BOOL_AND(
+          estado = 'finalizado' 
+          AND fecha_partido + interval '70 minutes' <= NOW()
+        ) AS jornada_visible_finalizada
+      FROM partidos
+      WHERE id_liga = $1
+        AND jornada = $2
+    `, [parseInt(id_liga), parseInt(jornada)]);
+
+    const estadoJornada = jornadaFinalizadaRes.rows[0] || {};
+    const jornadaVisibleFinalizada = estadoJornada.jornada_visible_finalizada === true;
+
+    const query = `
+      WITH partidos_visibles AS (
+        SELECT id_partido
+        FROM partidos
+        WHERE id_liga = $1
+          AND jornada = $3
+          AND estado = 'finalizado'
+          AND fecha_partido + interval '70 minutes' <= NOW()
+      ),
+      puntos_por_jugador AS (
+        SELECT 
+          rp.id_user,
+          rp.id_futbolista,
+          rp.hueco_plantilla,
+          SUM(rp.puntos_totales) AS puntos,
+          SUM(rp.goles) AS goles,
+          SUM(rp.asistencias) AS asistencias,
+          SUM(rp.amarillas) AS amarillas,
+          SUM(rp.rojas) AS rojas,
+          MAX(rp.nota_base) AS nota_base
+        FROM rendimiento_partido rp
+        JOIN partidos_visibles pv ON pv.id_partido = rp.id_partido
+        WHERE rp.id_user = $2
+        GROUP BY rp.id_user, rp.id_futbolista, rp.hueco_plantilla
+      )
+      SELECT 
+        aj.hueco_plantilla,
+        aj.id_futbolista,
+        aj.es_hueco_vacio,
+        aj.nombre_snapshot,
+        aj.posicion_snapshot,
+        aj.media_snapshot,
+        aj.tipo_carta_snapshot,
+        aj.codigo_habilidad_snapshot,
+
+        CASE
+          WHEN aj.es_hueco_vacio = true THEN 'Hueco vacío'
+          ELSE aj.nombre_snapshot
+        END AS nombre,
+
+        CASE
+          WHEN aj.es_hueco_vacio = true THEN '-'
+          ELSE aj.posicion_snapshot
+        END AS posicion,
+
+        COALESCE(aj.media_snapshot, 0) AS valor,
+
+        CASE 
+          WHEN aj.hueco_plantilla = 'hueco-12' THEN NULL
+          WHEN aj.es_hueco_vacio = true THEN COALESCE(ppj.puntos, -3)
+          WHEN ppj.puntos IS NOT NULL THEN ppj.puntos
+          WHEN $4::boolean = true THEN 0
+          ELSE NULL
+        END AS puntos,
+
+        COALESCE(ppj.goles, 0) AS goles,
+        COALESCE(ppj.asistencias, 0) AS asistencias,
+        COALESCE(ppj.amarillas, 0) AS amarillas,
+        COALESCE(ppj.rojas, 0) AS rojas,
+        ppj.nota_base,
+
+        CASE
+          WHEN aj.hueco_plantilla = 'hueco-12' THEN 'habilidad'
+          WHEN aj.es_hueco_vacio = true THEN 'hueco_vacio'
+          WHEN ppj.puntos IS NOT NULL THEN 'puntuado'
+          WHEN $4::boolean = true THEN 'no_jugo'
+          ELSE 'pendiente'
+        END AS estado_puntuacion
+
+      FROM alineaciones_jornada aj
+      LEFT JOIN puntos_por_jugador ppj
+        ON ppj.id_user = aj.id_user
+        AND (
+          (ppj.id_futbolista = aj.id_futbolista)
+          OR (
+            ppj.hueco_plantilla = aj.hueco_plantilla 
+            AND aj.es_hueco_vacio = true
+          )
+        )
+      WHERE aj.id_liga = $1
+        AND aj.id_user = $2
+        AND aj.jornada = $3
+      ORDER BY 
+        CASE 
+          WHEN aj.hueco_plantilla = 'hueco-12' THEN 12
+          ELSE CAST(REPLACE(aj.hueco_plantilla, 'hueco-', '') AS integer)
+        END ASC;
     `;
-    
+
     const result = await db.query(query, [
-      parseInt(id_liga), 
-      parseInt(id_manager), 
-      parseInt(jornada)
+      parseInt(id_liga),
+      parseInt(id_manager),
+      parseInt(jornada),
+      jornadaVisibleFinalizada
     ]);
-    
+
     res.json(result.rows);
-  } catch(err) {
+  } catch (err) {
     console.error("Error en puntos-jornada:", err);
-    res.status(500).json({message: 'Error cargando puntos'});
+    res.status(500).json({ message: 'Error cargando puntos' });
   }
 });
 
