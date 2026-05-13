@@ -3017,7 +3017,13 @@ router.post('/:id_liga/bloquear-jornada/:jornada', verifyToken, requireLeagueRol
     });
   } catch (err) {
     console.error('Error bloqueando jornada:', err);
-    res.status(500).json({ message: 'Error bloqueando la jornada' });
+
+    res.status(500).json({
+      message: 'Error bloqueando la jornada',
+      error: err.message,
+      code: err.code,
+      detail: err.detail
+    });
   }
 });
 
