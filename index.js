@@ -177,9 +177,174 @@ async function asignarPlantillaInicialUsuario(idUser, idLiga) {
   return jugadoresAsignados;
 }
 
+// Bloquear alineaciones para cada jornada
+async function bloquearAlineacionesJornada(idLiga, jornada) {
+  const yaBloqueada = await db.query(`
+    SELECT 1
+    FROM alineaciones_jornada
+    WHERE id_liga = $1
+      AND jornada = $2
+    LIMIT 1
+  `, [idLiga, jornada]);
+
+  if (yaBloqueada.rows.length > 0) {
+    return { bloqueada: false, motivo: 'La jornada ya estaba bloqueada' };
+  }
+
+  const usuariosRes = await db.query(`
+    SELECT 
+      ul.id_user,
+      COALESCE(ul.formacion, '4-3-3') AS formacion
+    FROM users_liga ul
+    WHERE ul.id_liga = $1
+  `, [idLiga]);
+
+  const huecosObligatorios = [
+    'hueco-1',
+    'hueco-2',
+    'hueco-3',
+    'hueco-4',
+    'hueco-5',
+    'hueco-6',
+    'hueco-7',
+    'hueco-8',
+    'hueco-9',
+    'hueco-10',
+    'hueco-11'
+  ];
+
+  let totalUsuarios = 0;
+  let totalHuecosVacios = 0;
+  let totalJugadoresBloqueados = 0;
+
+  for (const usuario of usuariosRes.rows) {
+    totalUsuarios++;
+
+    const titularesRes = await db.query(`
+      SELECT 
+        ful.id_futbolista,
+        ful.hueco_plantilla,
+        f.nombre,
+        f.posicion,
+        f.media,
+        f.tipo_carta,
+        f.codigo_habilidad
+      FROM futbolista_user_liga ful
+      JOIN futbolistas f ON f.id_futbolista = ful.id_futbolista
+      WHERE ful.id_liga = $1
+        AND ful.id_user = $2
+        AND ful.es_titular = true
+        AND ful.hueco_plantilla IS NOT NULL
+    `, [idLiga, usuario.id_user]);
+
+    const porHueco = new Map();
+
+    for (const jugador of titularesRes.rows) {
+      porHueco.set(jugador.hueco_plantilla, jugador);
+    }
+
+    for (const hueco of huecosObligatorios) {
+      const jugador = porHueco.get(hueco);
+
+      if (jugador) {
+        await db.query(`
+          INSERT INTO alineaciones_jornada (
+            id_liga,
+            jornada,
+            id_user,
+            id_futbolista,
+            hueco_plantilla,
+            es_hueco_vacio,
+            tipo_carta_snapshot,
+            nombre_snapshot,
+            posicion_snapshot,
+            media_snapshot,
+            codigo_habilidad_snapshot
+          )
+          VALUES ($1,$2,$3,$4,$5,false,$6,$7,$8,$9,$10)
+          ON CONFLICT (id_liga, jornada, id_user, hueco_plantilla) DO NOTHING
+        `, [
+          idLiga,
+          jornada,
+          usuario.id_user,
+          jugador.id_futbolista,
+          hueco,
+          jugador.tipo_carta,
+          jugador.nombre,
+          jugador.posicion,
+          jugador.media,
+          jugador.codigo_habilidad
+        ]);
+
+        totalJugadoresBloqueados++;
+      } else {
+        await db.query(`
+          INSERT INTO alineaciones_jornada (
+            id_liga,
+            jornada,
+            id_user,
+            id_futbolista,
+            hueco_plantilla,
+            es_hueco_vacio
+          )
+          VALUES ($1,$2,$3,NULL,$4,true)
+          ON CONFLICT (id_liga, jornada, id_user, hueco_plantilla) DO NOTHING
+        `, [
+          idLiga,
+          jornada,
+          usuario.id_user,
+          hueco
+        ]);
+
+        totalHuecosVacios++;
+      }
+    }
+
+    const jugador12 = porHueco.get('hueco-12');
+
+    if (jugador12) {
+      await db.query(`
+        INSERT INTO alineaciones_jornada (
+          id_liga,
+          jornada,
+          id_user,
+          id_futbolista,
+          hueco_plantilla,
+          es_hueco_vacio,
+          tipo_carta_snapshot,
+          nombre_snapshot,
+          posicion_snapshot,
+          media_snapshot,
+          codigo_habilidad_snapshot
+        )
+        VALUES ($1,$2,$3,$4,'hueco-12',false,$5,$6,$7,$8,$9)
+        ON CONFLICT (id_liga, jornada, id_user, hueco_plantilla) DO NOTHING
+      `, [
+        idLiga,
+        jornada,
+        usuario.id_user,
+        jugador12.id_futbolista,
+        jugador12.tipo_carta,
+        jugador12.nombre,
+        jugador12.posicion,
+        jugador12.media,
+        jugador12.codigo_habilidad
+      ]);
+    }
+  }
+
+  return {
+    bloqueada: true,
+    usuarios: totalUsuarios,
+    jugadores: totalJugadoresBloqueados,
+    huecos_vacios: totalHuecosVacios
+  };
+}
+
 
 // --- RUTAS DE LIGAS ---
 const router = express.Router();
+
 
 // Crear una liga
 router.post('/', verifyToken, async (req, res) => {
@@ -709,6 +874,43 @@ app.put('/api/perfil', verifyToken, async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: 'Error al actualizar el perfil' });
+  }
+});
+
+// Consulta de alineación bloqueada
+router.get('/:id_liga/alineacion-jornada/:jornada/:id_user', verifyToken, async (req, res) => {
+  const { id_liga, jornada, id_user } = req.params;
+
+  try {
+    const result = await db.query(`
+      SELECT 
+        id_liga,
+        jornada,
+        id_user,
+        id_futbolista,
+        hueco_plantilla,
+        es_hueco_vacio,
+        tipo_carta_snapshot,
+        nombre_snapshot,
+        posicion_snapshot,
+        media_snapshot,
+        codigo_habilidad_snapshot,
+        fecha_bloqueo
+      FROM alineaciones_jornada
+      WHERE id_liga = $1
+        AND jornada = $2
+        AND id_user = $3
+      ORDER BY 
+        CASE 
+          WHEN hueco_plantilla = 'hueco-12' THEN 12
+          ELSE CAST(REPLACE(hueco_plantilla, 'hueco-', '') AS integer)
+        END ASC
+    `, [id_liga, jornada, id_user]);
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error('Error obteniendo alineación bloqueada:', err);
+    res.status(500).json({ message: 'Error obteniendo alineación bloqueada' });
   }
 });
 
@@ -2800,7 +3002,24 @@ app.get('/api/cron/premios-jornada', async (req, res) => {
   }
 });
 
+// P R U E B A
+router.post('/:id_liga/bloquear-jornada/:jornada', verifyToken, requireLeagueRole(['owner', 'admin']), async (req, res) => {
+  const { id_liga, jornada } = req.params;
 
+  try {
+    const resultado = await bloquearAlineacionesJornada(Number(id_liga), Number(jornada));
+
+    res.json({
+      message: resultado.bloqueada
+        ? `Jornada ${jornada} bloqueada correctamente`
+        : `Jornada ${jornada} no se ha bloqueado`,
+      resultado
+    });
+  } catch (err) {
+    console.error('Error bloqueando jornada:', err);
+    res.status(500).json({ message: 'Error bloqueando la jornada' });
+  }
+});
 
 app.use('/api/ligas', router);
 app.use('/api/mercado', mercadoRouter);
