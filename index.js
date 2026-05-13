@@ -372,6 +372,74 @@ async function debeBloquearJornada(idLiga, jornada) {
   return ahora >= primerPartido;
 }
 
+// Aplicar penalización de -3 por jornada por huecos vacios
+async function aplicarPenalizacionesHuecosVaciosJornada(idLiga, jornada, idPartidoReferencia) {
+  const usuariosRes = await db.query(`
+    SELECT DISTINCT id_user
+    FROM alineaciones_jornada
+    WHERE id_liga = $1
+      AND jornada = $2
+  `, [idLiga, jornada]);
+
+  for (const usuario of usuariosRes.rows) {
+    const yaPenalizado = await db.query(`
+      SELECT 1
+      FROM rendimiento_partido rp
+      JOIN partidos p ON p.id_partido = rp.id_partido
+      WHERE p.id_liga = $1
+        AND p.jornada = $2
+        AND rp.id_user = $3
+        AND rp.tipo_registro = 'hueco_vacio'
+      LIMIT 1
+    `, [idLiga, jornada, usuario.id_user]);
+
+    if (yaPenalizado.rows.length > 0) {
+      continue;
+    }
+
+    const huecosRes = await db.query(`
+      SELECT hueco_plantilla
+      FROM alineaciones_jornada
+      WHERE id_liga = $1
+        AND jornada = $2
+        AND id_user = $3
+        AND es_hueco_vacio = true
+        AND hueco_plantilla != 'hueco-12'
+    `, [idLiga, jornada, usuario.id_user]);
+
+    for (const hueco of huecosRes.rows) {
+      await db.query(`
+        INSERT INTO rendimiento_partido
+        (
+          id_partido,
+          id_futbolista,
+          id_user,
+          nota_base,
+          puntos_totales,
+          goles,
+          asistencias,
+          amarillas,
+          rojas,
+          tipo_registro,
+          hueco_plantilla
+        )
+        VALUES ($1, NULL, $2, NULL, -3, 0, 0, 0, 0, 'hueco_vacio', $3)
+      `, [
+        idPartidoReferencia,
+        usuario.id_user,
+        hueco.hueco_plantilla
+      ]);
+
+      await db.query(`
+        UPDATE users_liga
+        SET puntos = puntos - 3
+        WHERE id_user = $1
+          AND id_liga = $2
+      `, [usuario.id_user, idLiga]);
+    }
+  }
+}
+
 
 // --- RUTAS DE LIGAS ---
 const router = express.Router();
@@ -2643,6 +2711,12 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
         // De momento NO paramos la simulación por esto.
         // Más adelante podemos hacerlo obligatorio.
       }
+
+      await aplicarPenalizacionesHuecosVaciosJornada(
+        Number(partido.id_liga),
+        Number(partido.jornada),
+        Number(partido.id_partido)
+      );
       
       await db.query('BEGIN');
       
@@ -2988,15 +3062,6 @@ app.get('/api/cron/simular-partidos', async (req, res) => {
         for (const mio of jugadoresPuntuables) {
           // Penalización por hueco vacío. Hueco-12 ya está excluido.
           if (mio.es_hueco_vacio) {
-            const puntosHueco = -3;
-
-            await db.query(`
-              INSERT INTO rendimiento_partido
-              (id_partido, id_futbolista, id_user, nota_base, puntos_totales, goles, asistencias, amarillas, rojas)
-              VALUES ($1, NULL, $2, NULL, $3, 0, 0, 0, 0)
-            `, [partido.id_partido, man.id_user, puntosHueco]);
-
-            puntosTotalesManager += puntosHueco;
             continue;
           }
 
