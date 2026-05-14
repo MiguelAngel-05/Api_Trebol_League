@@ -1523,42 +1523,142 @@ router.get('/:id_liga/estado-jornada/:jornada', verifyToken, async (req, res) =>
 // Terminar/Reiniciar Liga con opciones
 router.post('/:id_liga/reset', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
   const { id_liga } = req.params;
-  const { borrarPuntos, borrarJugadores, borrarJornadas, borrarDinero, borrarMensajes } = req.body;
+
+  const {
+    borrarPuntos,
+    borrarJugadores,
+    borrarJornadas,
+    borrarDinero,
+    borrarMensajes
+  } = req.body;
 
   try {
     await db.query('BEGIN');
 
+    // 1. Borrar todo lo relacionado con jornadas/partidos
     if (borrarJornadas) {
-      await db.query('DELETE FROM rendimiento_partido WHERE id_partido IN (SELECT id_partido FROM partidos WHERE id_liga = $1)', [id_liga]);
-      await db.query('DELETE FROM eventos_partido WHERE id_partido IN (SELECT id_partido FROM partidos WHERE id_liga = $1)', [id_liga]);
-      await db.query('DELETE FROM partidos WHERE id_liga = $1', [id_liga]);
+      await db.query(`
+        DELETE FROM rendimiento_partido 
+        WHERE id_partido IN (
+          SELECT id_partido 
+          FROM partidos 
+          WHERE id_liga = $1
+        )
+      `, [id_liga]);
+
+      await db.query(`
+        DELETE FROM eventos_partido 
+        WHERE id_partido IN (
+          SELECT id_partido 
+          FROM partidos 
+          WHERE id_liga = $1
+        )
+      `, [id_liga]);
+
+      await db.query(`
+        DELETE FROM alineaciones_jornada 
+        WHERE id_liga = $1
+      `, [id_liga]);
+
+      await db.query(`
+        DELETE FROM partidos 
+        WHERE id_liga = $1
+      `, [id_liga]);
     }
 
+    // 2. Resetear puntos de usuarios de esa liga
     if (borrarPuntos) {
-      await db.query('UPDATE users_liga SET puntos = 0 WHERE id_liga = $1', [id_liga]);
+      await db.query(`
+        UPDATE users_liga 
+        SET puntos = 0 
+        WHERE id_liga = $1
+      `, [id_liga]);
     }
 
+    // 3. Resetear dinero
     if (borrarDinero) {
-      await db.query('UPDATE users_liga SET dinero = 0 WHERE id_liga = $1', [id_liga]);
+      await db.query(`
+        UPDATE users_liga 
+        SET dinero = 0 
+        WHERE id_liga = $1
+      `, [id_liga]);
     }
 
+    // 4. Borrar jugadores y mercado
     if (borrarJugadores) {
-      await db.query('DELETE FROM futbolista_user_liga WHERE id_liga = $1', [id_liga]);
-      await db.query('DELETE FROM pujas WHERE id_liga = $1', [id_liga]);
-      await db.query('DELETE FROM mercado_liga WHERE id_liga = $1', [id_liga]);
-      await db.query('DELETE FROM historial_transferencias WHERE id_liga = $1', [id_liga]);
+      await db.query(`
+        DELETE FROM futbolista_user_liga 
+        WHERE id_liga = $1
+      `, [id_liga]);
+
+      await db.query(`
+        DELETE FROM pujas 
+        WHERE id_liga = $1
+      `, [id_liga]);
+
+      await db.query(`
+        DELETE FROM mercado_liga 
+        WHERE id_liga = $1
+      `, [id_liga]);
+
+      await db.query(`
+        DELETE FROM historial_transferencias 
+        WHERE id_liga = $1
+      `, [id_liga]);
+
+      await db.query(`
+        DELETE FROM ofertas_privadas 
+        WHERE id_liga = $1
+      `, [id_liga]);
     }
 
+    // 5. Borrar mensajes
     if (borrarMensajes) {
-      await db.query('DELETE FROM chat_general WHERE id_liga = $1', [id_liga]);
-      await db.query('DELETE FROM ofertas_privadas WHERE id_liga = $1', [id_liga]);
-      await db.query('DELETE FROM mensajes_privados WHERE id_liga = $1', [id_liga]);
+      await db.query(`
+        DELETE FROM chat_general 
+        WHERE id_liga = $1
+      `, [id_liga]);
+
+      await db.query(`
+        DELETE FROM mensajes_privados 
+        WHERE id_liga = $1
+      `, [id_liga]);
+
+      await db.query(`
+        DELETE FROM ofertas_privadas 
+        WHERE id_liga = $1
+      `, [id_liga]);
     }
+
+    // 6. Dejar la liga como inactiva y limpiar configuración de temporada
+    await db.query(`
+      UPDATE ligas
+      SET 
+        temporada_estado = 'inactiva',
+        dinero_inicial = NULL,
+        dar_plantilla_inicial = false,
+        fecha_inicio_temporada = NULL,
+        fecha_fin_temporada = NOW(),
+        reset_automatico_en = NULL
+      WHERE id_liga = $1
+    `, [id_liga]);
+
+    // 7. Limpiar formación y alineaciones activas de los usuarios
+    await db.query(`
+      UPDATE users_liga
+      SET formacion = NULL
+      WHERE id_liga = $1
+    `, [id_liga]);
 
     await db.query('COMMIT');
-    res.json({ message: 'Acciones de reset aplicadas con éxito.' });
+
+    res.json({
+      message: 'Liga reiniciada correctamente. La temporada queda inactiva y lista para configurarse de nuevo.'
+    });
+
   } catch (err) {
     await db.query('ROLLBACK');
+    console.error('Error al reiniciar la liga:', err);
     res.status(500).json({ error: 'Error al reiniciar la liga' });
   }
 });
