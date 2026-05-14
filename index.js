@@ -440,6 +440,93 @@ async function aplicarPenalizacionesHuecosVaciosJornada(idLiga, jornada, idParti
   }
 }
 
+// Helper para el reseteo de una liga finalizada
+async function resetearLigaCompleta(idLiga) {
+  await db.query(`
+    DELETE FROM rendimiento_partido 
+    WHERE id_partido IN (
+      SELECT id_partido 
+      FROM partidos 
+      WHERE id_liga = $1
+    )
+  `, [idLiga]);
+
+  await db.query(`
+    DELETE FROM eventos_partido 
+    WHERE id_partido IN (
+      SELECT id_partido 
+      FROM partidos 
+      WHERE id_liga = $1
+    )
+  `, [idLiga]);
+
+  await db.query(`
+    DELETE FROM alineaciones_jornada 
+    WHERE id_liga = $1
+  `, [idLiga]);
+
+  await db.query(`
+    DELETE FROM partidos 
+    WHERE id_liga = $1
+  `, [idLiga]);
+
+  await db.query(`
+    DELETE FROM futbolista_user_liga 
+    WHERE id_liga = $1
+  `, [idLiga]);
+
+  await db.query(`
+    DELETE FROM pujas 
+    WHERE id_liga = $1
+  `, [idLiga]);
+
+  await db.query(`
+    DELETE FROM mercado_liga 
+    WHERE id_liga = $1
+  `, [idLiga]);
+
+  await db.query(`
+    DELETE FROM historial_transferencias 
+    WHERE id_liga = $1
+  `, [idLiga]);
+
+  await db.query(`
+    DELETE FROM ofertas_privadas 
+    WHERE id_liga = $1
+  `, [idLiga]);
+
+  await db.query(`
+    DELETE FROM mensajes_privados 
+    WHERE id_liga = $1
+  `, [idLiga]);
+
+  await db.query(`
+    DELETE FROM chat_general 
+    WHERE id_liga = $1
+  `, [idLiga]);
+
+  await db.query(`
+    UPDATE users_liga
+    SET 
+      puntos = 0,
+      dinero = 0,
+      formacion = NULL
+    WHERE id_liga = $1
+  `, [idLiga]);
+
+  await db.query(`
+    UPDATE ligas
+    SET 
+      temporada_estado = 'inactiva',
+      dinero_inicial = NULL,
+      dar_plantilla_inicial = false,
+      fecha_inicio_temporada = NULL,
+      fecha_fin_temporada = NULL,
+      reset_automatico_en = NULL
+    WHERE id_liga = $1
+  `, [idLiga]);
+}
+
 
 // --- RUTAS DE LIGAS ---
 const router = express.Router();
@@ -3732,158 +3819,118 @@ app.get('/api/cron/premios-jornada', async (req, res) => {
   }
 });
 
-router.post('/:id_liga/reparar-penalizaciones-antiguas', verifyToken, requireLeagueRole(['owner']), async (req, res) => {
-  const { id_liga } = req.params;
+// Detección de ligas terminadas para la finalización de liga que lleven finalizadas 7 días
+app.get('/api/cron/finalizar-ligas', async (req, res) => {
+  const authHeader = req.headers.authorization;
+
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ error: 'No autorizado' });
+  }
 
   try {
     await db.query('BEGIN');
 
-    const jornadasRes = await db.query(`
-      SELECT DISTINCT jornada
-      FROM partidos
-      WHERE id_liga = $1
-        AND fecha_partido <= NOW()
-      ORDER BY jornada ASC
-    `, [id_liga]);
+    const ligasFinalizadas = await db.query(`
+      SELECT 
+        l.id_liga
+      FROM ligas l
+      JOIN partidos p ON p.id_liga = l.id_liga
+      WHERE l.temporada_estado = 'activa'
+      GROUP BY l.id_liga
+      HAVING 
+        COUNT(p.id_partido) > 0
+        AND BOOL_AND(
+          p.estado = 'finalizado'
+          AND p.fecha_partido + interval '70 minutes' <= NOW()
+        )
+    `);
 
-    const huecosObligatorios = [
-      'hueco-1',
-      'hueco-2',
-      'hueco-3',
-      'hueco-4',
-      'hueco-5',
-      'hueco-6',
-      'hueco-7',
-      'hueco-8',
-      'hueco-9',
-      'hueco-10',
-      'hueco-11'
-    ];
+    for (const liga of ligasFinalizadas.rows) {
+      await db.query(`
+        UPDATE ligas
+        SET 
+          temporada_estado = 'finalizada',
+          fecha_fin_temporada = COALESCE(fecha_fin_temporada, NOW()),
+          reset_automatico_en = COALESCE(reset_automatico_en, NOW() + interval '7 days')
+        WHERE id_liga = $1
+          AND temporada_estado = 'activa'
+      `, [liga.id_liga]);
 
-    let jornadasProcesadas = 0;
-    let penalizacionesInsertadas = 0;
-
-    for (const j of jornadasRes.rows) {
-      const jornada = j.jornada;
-
-      const usuariosRes = await db.query(`
+      const ownerRes = await db.query(`
         SELECT id_user
         FROM users_liga
         WHERE id_liga = $1
-      `, [id_liga]);
-
-      const partidoReferenciaRes = await db.query(`
-        SELECT id_partido
-        FROM partidos
-        WHERE id_liga = $1
-          AND jornada = $2
-        ORDER BY fecha_partido ASC
+          AND rol = 'owner'
         LIMIT 1
-      `, [id_liga, jornada]);
+      `, [liga.id_liga]);
 
-      if (partidoReferenciaRes.rows.length === 0) {
-        continue;
+      const idOwner = ownerRes.rows[0]?.id_user;
+
+      if (idOwner) {
+        await db.query(`
+          INSERT INTO chat_general (id_liga, id_user, mensaje)
+          VALUES (
+            $1,
+            $2,
+            '🏁 La liga ha finalizado. El sistema la reiniciará automáticamente dentro de 7 días.'
+          )
+        `, [liga.id_liga, idOwner]);
       }
-
-      const idPartidoReferencia = partidoReferenciaRes.rows[0].id_partido;
-
-      for (const usuario of usuariosRes.rows) {
-        const idUser = usuario.id_user;
-
-        const alineacionExiste = await db.query(`
-          SELECT 1
-          FROM alineaciones_jornada
-          WHERE id_liga = $1
-            AND jornada = $2
-            AND id_user = $3
-          LIMIT 1
-        `, [id_liga, jornada, idUser]);
-
-        if (alineacionExiste.rows.length === 0) {
-          for (const hueco of huecosObligatorios) {
-            await db.query(`
-              INSERT INTO alineaciones_jornada (
-                id_liga,
-                jornada,
-                id_user,
-                id_futbolista,
-                hueco_plantilla,
-                es_hueco_vacio
-              )
-              VALUES ($1, $2, $3, NULL, $4, true)
-              ON CONFLICT (id_liga, jornada, id_user, hueco_plantilla) DO NOTHING
-            `, [id_liga, jornada, idUser, hueco]);
-          }
-        }
-
-        const yaPenalizado = await db.query(`
-          SELECT 1
-          FROM rendimiento_partido rp
-          JOIN partidos p ON p.id_partido = rp.id_partido
-          WHERE p.id_liga = $1
-            AND p.jornada = $2
-            AND rp.id_user = $3
-            AND rp.tipo_registro = 'hueco_vacio'
-          LIMIT 1
-        `, [id_liga, jornada, idUser]);
-
-        if (yaPenalizado.rows.length > 0) {
-          continue;
-        }
-
-        const huecosVaciosRes = await db.query(`
-          SELECT hueco_plantilla
-          FROM alineaciones_jornada
-          WHERE id_liga = $1
-            AND jornada = $2
-            AND id_user = $3
-            AND es_hueco_vacio = true
-            AND hueco_plantilla != 'hueco-12'
-        `, [id_liga, jornada, idUser]);
-
-        for (const hueco of huecosVaciosRes.rows) {
-          await db.query(`
-            INSERT INTO rendimiento_partido (
-              id_partido,
-              id_futbolista,
-              id_user,
-              nota_base,
-              puntos_totales,
-              goles,
-              asistencias,
-              amarillas,
-              rojas,
-              tipo_registro,
-              hueco_plantilla
-            )
-            VALUES ($1, NULL, $2, NULL, -3, 0, 0, 0, 0, 'hueco_vacio', $3)
-          `, [
-            idPartidoReferencia,
-            idUser,
-            hueco.hueco_plantilla
-          ]);
-
-          penalizacionesInsertadas++;
-        }
-      }
-
-      jornadasProcesadas++;
     }
 
     await db.query('COMMIT');
 
     res.json({
-      message: 'Penalizaciones antiguas reparadas',
-      jornadas_procesadas: jornadasProcesadas,
-      penalizaciones_insertadas: penalizacionesInsertadas
+      message: 'Ligas finalizadas revisadas correctamente.',
+      ligas_finalizadas: ligasFinalizadas.rows.length
     });
 
   } catch (err) {
     await db.query('ROLLBACK');
-    console.error('Error reparando penalizaciones antiguas:', err);
-    res.status(500).json({ message: 'Error reparando penalizaciones antiguas' });
+    console.error('Error finalizando ligas:', err);
+    res.status(500).json({ error: 'Error finalizando ligas' });
   }
 });
+
+// Ejecución de la finalización de ligas que lleven finalizadas 7 días
+app.get('/api/cron/reset-ligas-finalizadas', async (req, res) => {
+  const authHeader = req.headers.authorization;
+
+  if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+    return res.status(401).json({ error: 'No autorizado' });
+  }
+
+  try {
+    await db.query('BEGIN');
+
+    const ligasResetear = await db.query(`
+      SELECT id_liga
+      FROM ligas
+      WHERE temporada_estado = 'finalizada'
+        AND reset_automatico_en IS NOT NULL
+        AND reset_automatico_en <= NOW()
+      FOR UPDATE
+    `);
+
+    for (const liga of ligasResetear.rows) {
+      await resetearLigaCompleta(liga.id_liga);
+    }
+
+    await db.query('COMMIT');
+
+    res.json({
+      message: 'Ligas finalizadas reseteadas correctamente.',
+      ligas_reseteadas: ligasResetear.rows.length
+    });
+
+  } catch (err) {
+    await db.query('ROLLBACK');
+    console.error('Error reseteando ligas finalizadas:', err);
+    res.status(500).json({ error: 'Error reseteando ligas finalizadas' });
+  }
+});
+
+
 
 app.use('/api/ligas', router);
 app.use('/api/mercado', mercadoRouter);
